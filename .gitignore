@@ -14,7 +14,6 @@
 *.test
 *.out
 cmd/migration/migration
-cmd/kafka-gen/kafka-gen
 
 # Go workspace file
 go.work

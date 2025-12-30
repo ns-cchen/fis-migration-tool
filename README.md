@@ -47,7 +47,6 @@ Database migration tool that exports `fis_aggr` data from MariaDB to CSV files, 
   -execute-sql
 ```
 
-
 ## Configuration
 
 ### CLI Flags
@@ -133,6 +132,7 @@ sql_exec_timeout: 300
 ### Streaming Multipart Upload
 
 The tool uses **streaming multipart upload** to S3:
+
 - **No local file storage**: Data is streamed directly to S3 as CSV batches
 - **One S3 object per hash range**: Each hash range (e.g., `00-10`) produces one S3 object
 - **Each batch = one multipart part**: Each 100k-row batch is converted to CSV bytes and uploaded as a separate S3 multipart part
@@ -141,6 +141,7 @@ The tool uses **streaming multipart upload** to S3:
 ### S3 Keys
 
 CSV files are uploaded to S3 with key pattern:
+
 ```
 <prefix>/tenant-<T>/<table>/<filename>
 ```
@@ -148,6 +149,7 @@ CSV files are uploaded to S3 with key pattern:
 Example: `fis-migration/tenant-1234/fis_aggr/tenant-1234.fis_aggr.hash-00-10.csv`
 
 SQL file is uploaded to S3 with key pattern:
+
 ```
 <prefix>/sql/load-data-tenant-<T>.sql
 ```
@@ -161,27 +163,32 @@ After running the migration tool, you can verify that CSV files and SQL file wer
 ### Using AWS CLI
 
 **List all CSV files for a tenant:**
+
 ```bash
 aws s3 ls s3://<bucket>/fis-migration/tenant-<tenant-id>/fis_aggr/ --recursive --region <region>
 ```
 
 **Count CSV files:**
+
 ```bash
 aws s3 ls s3://<bucket>/fis-migration/tenant-<tenant-id>/fis_aggr/ --recursive --region <region> | grep "\.csv$" | wc -l
 ```
 
 **List SQL file:**
+
 ```bash
 aws s3 ls s3://<bucket>/fis-migration/sql/load-data-tenant-<tenant-id>.sql --region <region>
 ```
 
 **Download a CSV file to verify content:**
+
 ```bash
 aws s3 cp s3://<bucket>/<csv-s3-key> ./verify.csv --region <region>
 head -5 verify.csv  # View first 5 lines
 ```
 
 **Download SQL file:**
+
 ```bash
 aws s3 cp s3://<bucket>/fis-migration/sql/load-data-tenant-<tenant-id>.sql ./load-data-tenant-<tenant-id>.sql --region <region>
 ```
@@ -189,12 +196,14 @@ aws s3 cp s3://<bucket>/fis-migration/sql/load-data-tenant-<tenant-id>.sql ./loa
 ### Using Migration Tool Output
 
 The migration tool prints a summary at the end showing:
+
 - Total CSV files uploaded
 - Individual CSV file S3 keys (up to 10 files, or first 5 + last 5 if more)
 - SQL file S3 key
 - AWS CLI command to verify all files
 
 Example output:
+
 ```
 === Migration Summary ===
 Tenant ID: 1234
@@ -229,7 +238,7 @@ For Aurora MySQL password, the tool uses AWS Secrets Manager (via `util.ResolveA
 - **S3 errors**: Retry with exponential backoff (max 5 retries)
 - **SQL execution errors**: Log and continue (don't fail entire migration)
 - **Connection errors**: Retry up to 3 times with exponential backoff
-- **Aurora MySQL LOAD DATA FROM S3 errors**: 
+- **Aurora MySQL LOAD DATA FROM S3 errors**:
   - **Error 63985**: Aurora MySQL cluster requires IAM role configuration for S3 access
     - **Fix**: Configure `aurora_load_from_s3_role` or `aws_default_s3_role` on the Aurora MySQL cluster
   - **Error 1062 (Duplicate entry)**: Data already exists in the target table
@@ -259,8 +268,8 @@ The Aurora MySQL cluster needs one of the following parameters configured:
 - **`aurora_load_from_s3_role`**: IAM role ARN specifically for LOAD DATA FROM S3 operations
 - **`aws_default_s3_role`**: Default IAM role for S3 operations (can be used for multiple purposes)
 - **AWS Documentation Reference**:
-   - [Aurora MySQL LOAD DATA FROM S3](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/AuroraMySQL.Integrating.LoadFromS3.html)
-   - [Setting up IAM roles for Aurora](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/AuroraMySQL.Integrating.Authorizing.IAM.html)
+  - [Aurora MySQL LOAD DATA FROM S3](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/AuroraMySQL.Integrating.LoadFromS3.html)
+  - [Setting up IAM roles for Aurora](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/AuroraMySQL.Integrating.Authorizing.IAM.html)
 
 ## Examples
 
@@ -284,34 +293,21 @@ The Aurora MySQL cluster needs one of the following parameters configured:
   -execute-sql
 ```
 
-
 ## End-to-End Migration Testing
 
 The `verify-migration.sh` script provides a complete end-to-end migration test that:
 
-1. Generates mock data (via Kafka or uses existing data)
-2. Waits for updater to consume and insert to fis_aggr
-3. Dumps CSV files from MariaDB
-4. Uploads CSV files to S3
-5. Executes LOAD DATA FROM S3 on Aurora MySQL
-6. Verifies data exists in Aurora MySQL
+1. Uses existing data from MariaDB (or skips data generation)
+2. Dumps CSV files from MariaDB
+3. Uploads CSV files to S3
+4. Executes LOAD DATA FROM S3 on Aurora MySQL (optional)
+5. Verifies data exists in Aurora MySQL
 
-### Data Generation Methods
-
-**Kafka-based (Recommended for NPE)**:
-- Uses `kafka-gen` Go binary to generate events
-- Events flow through Kafka → updater → fis_aggr
-- Avoids lock contention (uses natural flow)
-- Production-like workload
-
-**Existing Data (Recommended for Local)**:
-- Auto-detects tenants with existing data
-- No data generation needed
-- Fast and simple for local testing
 
 ### Usage Examples
 
 **Example 1: Local testing with existing data (NPE) - Auto-detect tenant**
+
 ```bash
 ./verify-migration.sh --use-tunnels qa01 --use-existing-data \
   --mp-password <npe-mariadb-password> \
@@ -320,7 +316,9 @@ The `verify-migration.sh` script provides a complete end-to-end migration test t
   --aws-mysql-region us-east-1 \
   --aws-database fis_qa01
 ```
+
 **What it does:**
+
 1. Creates SSH tunnels to NPE MariaDB and AWS Aurora MySQL (qa01)
 2. Auto-detects a tenant with existing data in MariaDB (no `--tenant-id` specified)
 3. Exports tenant data from MariaDB → CSV files → Uploads to S3
@@ -329,39 +327,15 @@ The `verify-migration.sh` script provides a complete end-to-end migration test t
 6. Verifies data exists in Aurora MySQL
 
 **Flags explained:**
+
 - `--use-tunnels qa01`: Auto-configures qa01 tunnel settings (jump/target/S3/region)
 - `--use-existing-data`: Use existing tenant data, auto-detect tenant (no data generation)
 - `--mp-password`: MariaDB password for NPE (required)
 - `--aws-mysql-user`, `--aws-mysql-secret`, `--aws-mysql-region`: Aurora MySQL connection (for SQL execution)
 - `--aws-database`: Aurora MySQL database name
 
-**Example 2: Benchmark testing with Kafka (NPE) - Generate test data**
-```bash
-./verify-migration.sh --use-tunnels qa01 --use-kafka \
-  --mp-password <npe-mariadb-password> \
-  --benchmark-events 1000 \
-  --benchmark-unique-md5 10 \
-  --aws-mysql-user fis \
-  --aws-mysql-secret rds!cluster-d256b298-d749-488a-8e55-34018d6047dc \
-  --aws-mysql-region us-east-1 \
-  --aws-database fis_qa01
-```
-**What it does:**
-1. Creates SSH tunnels to NPE MariaDB and AWS Aurora MySQL
-2. Generates 1000 Kafka events with 10 unique MD5 hashes (test data)
-3. Waits for updater to process events and insert into `fis_aggr` table
-4. Exports tenant data from MariaDB → CSV files → Uploads to S3
-5. Generates SQL file → Uploads to S3
-6. Executes SQL on Aurora MySQL to load data
-7. Verifies data exists in Aurora MySQL
+**Example 2: With specific tenant ID (NPE) - Use existing data for tenant 1234**
 
-**Flags explained:**
-- `--use-kafka`: Generate test data via Kafka (instead of using existing data)
-- `--benchmark-events`: Number of Kafka events to generate
-- `--benchmark-unique-md5`: Number of unique MD5 hashes (fewer unique hashes = more updates to same rows)
-- Other flags same as Example 1
-
-**Example 3: With specific tenant ID (NPE) - Use existing data for tenant 1234**
 ```bash
 ./verify-migration.sh --use-tunnels qa01 --use-existing-data \
   --mp-password <npe-mariadb-password> \
@@ -371,7 +345,9 @@ The `verify-migration.sh` script provides a complete end-to-end migration test t
   --aws-mysql-region us-east-1 \
   --aws-database fis_qa01
 ```
+
 **What it does:**
+
 1. Creates SSH tunnels to NPE MariaDB and AWS Aurora MySQL
 2. Uses existing data for tenant 1234 (explicit tenant ID, no auto-detection)
 3. Exports tenant 1234 data from MariaDB → CSV files → Uploads to S3
@@ -380,17 +356,21 @@ The `verify-migration.sh` script provides a complete end-to-end migration test t
 6. Verifies data exists in Aurora MySQL
 
 **Flags explained:**
+
 - `--tenant-id 1234`: Explicitly specify tenant ID (overrides auto-detection)
 - `--use-existing-data`: Use existing data (no data generation)
 - Other flags same as Example 1
 
-**Example 4: PE (Production - fr4) - Export only, no SQL execution**
+**Example 3: PE (Production - fr4) - Export only, no SQL execution**
+
 ```bash
 ./verify-migration.sh --use-tunnels fr4 \
   --mp-password <pe-mariadb-password> \
   --tenant-id <tenant-id>
 ```
+
 **What it does:**
+
 1. Creates SSH tunnel to PE MariaDB (fr4) - auto-configured
 2. Exports tenant data from PE MariaDB → CSV files → Uploads to PE S3 bucket
 3. Generates SQL file → Uploads to S3
@@ -398,6 +378,7 @@ The `verify-migration.sh` script provides a complete end-to-end migration test t
 5. Prints instructions for manager to download SQL file and execute on EC2
 
 **Flags explained:**
+
 - `--use-tunnels fr4`: Auto-configures fr4 tunnel settings (jump/target/S3/region)
 - `--mp-password`: PE MariaDB password (required)
 - `--tenant-id`: **Required** - Always specify tenant ID for PE (no auto-detection)
@@ -405,12 +386,9 @@ The `verify-migration.sh` script provides a complete end-to-end migration test t
 
 ### CLI Flags
 
-- `--use-kafka`: Use Kafka for data generation (default: false)
-- `--benchmark-events N`: Number of events to generate via Kafka (default: 100)
-- `--benchmark-unique-md5 N`: Unique MD5 hashes (default: 10)
 - `--use-existing-data`: Use existing tenant data, don't generate (default: false)
 - `--tenant-id N`: Specify tenant ID (optional, auto-detect if not provided)
-- `--kafka-host HOST:PORT`: Kafka bootstrap servers (default: kafka01.qa01-mp-npe...)
+- `--skip-data-generation`: Skip data generation entirely
 
 ## Local Execution with SSH Tunnels
 
@@ -429,6 +407,7 @@ The migration tool can be run locally using SSH tunnels to connect to qa01 Maria
 For **Production Environment (PE)**, the tool can be run locally since PE K8s pods don't have AWS secrets mounted. The manager will execute SQL on EC2 after CSV files are uploaded.
 
 **PE Testing:**
+
 - Uses SSH tunnels to connect to PE MariaDB (same as NPE)
 - Provide MariaDB password via `--mp-password` flag (required for both NPE and PE)
 - **Always specify `--tenant-id`** (no auto-detection in production)
@@ -436,7 +415,8 @@ For **Production Environment (PE)**, the tool can be run locally since PE K8s po
 - **Skips SQL execution** if AWS MySQL connection info not provided (manager executes on EC2)
 - Provides clear instructions for manager on what SQL to execute
 
-**Important:** 
+**Important:**
+
 - Before manager executes SQL on EC2, ensure Aurora MySQL has IAM role configured for S3 access (see "Aurora MySQL IAM Role Configuration" section below)
 - When manager runs SQL on EC2, the SQL executes on Aurora MySQL, which needs the IAM role configured (not the EC2 instance)
 - Manager will encounter Error 63985 if Aurora doesn't have the IAM role configured
@@ -470,6 +450,7 @@ Run the verification script with `--use-tunnels` flag:
 #   --tenant-id: Tenant ID (required for PE)
 # Note: No --aws-mysql-* flags = SQL execution skipped, manager executes on EC2
 ```
+
 ```
 
 ### Tunnel Configuration
@@ -558,6 +539,7 @@ tsh login
 ```
 
 **PE (Production - fr4):**
+
 ```bash
 # 1. Ensure you're logged into Teleport
 tsh login
@@ -595,6 +577,7 @@ Local testing uses SSH tunnels to connect to real databases without deploying to
 - Access to qa01 and AWS clusters via Teleport (`tsh login`)
 - AWS credentials configured (for S3 and Secrets Manager)
 - Migration binary built:
+
   ```bash
   go build -o cmd/migration/migration ./cmd/migration
   ```
@@ -602,6 +585,7 @@ Local testing uses SSH tunnels to connect to real databases without deploying to
 #### Quick Start
 
 **1. Ensure you're logged into Teleport:**
+
 ```bash
 tsh login
 ```
@@ -609,6 +593,7 @@ tsh login
 **NPE (Non-Production Environment) Examples:**
 
 **Example 0: Use existing data (auto-detect tenant)**
+
 ```bash
 # What it does:
 #   - Creates SSH tunnel to NPE MariaDB (qa01)
@@ -628,6 +613,7 @@ tsh login
 ```
 
 **Example 1: Dump specific tenant to S3 (export only, no SQL execution)**
+
 ```bash
 # What it does:
 #   - Creates SSH tunnel to NPE MariaDB (qa01)
@@ -645,6 +631,7 @@ tsh login
 ```
 
 **Example 2: Dump specific tenant to S3 and execute SQL automatically**
+
 ```bash
 # What it does:
 #   - Creates SSH tunnels to NPE MariaDB and AWS Aurora (qa01)
@@ -665,6 +652,7 @@ tsh login
 ```
 
 **Example 3: Dump specific tenant with custom segments and parallelism**
+
 ```bash
 # What it does:
 #   - Same as Example 1, but with custom hash segmentation
@@ -684,6 +672,7 @@ tsh login
 **PE (Production Environment - fr4) Examples:**
 
 **Example 0: Use existing data (auto-detect tenant)**
+
 ```bash
 # What it does:
 #   - Creates SSH tunnel to PE MariaDB (fr4)
@@ -703,6 +692,7 @@ tsh login
 ```
 
 **Example 1: Dump specific tenant to S3 (export only, manager executes SQL on EC2)**
+
 ```bash
 # What it does:
 #   - Creates SSH tunnel to PE MariaDB (fr4)
@@ -725,6 +715,7 @@ tsh login
 ```
 
 **Example 2: Dump specific tenant to S3 and execute SQL automatically**
+
 ```bash
 # What it does:
 #   - Same as Example 1, but also executes SQL on Aurora MySQL automatically
@@ -743,6 +734,7 @@ tsh login
 ```
 
 **Example 3: Dump specific tenant with custom segments and parallelism**
+
 ```bash
 # What it does:
 #   - Same as Example 1, but with custom hash segmentation

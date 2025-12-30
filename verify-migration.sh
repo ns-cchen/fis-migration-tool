@@ -89,12 +89,8 @@ SKIP_DATA_GENERATION=false
 CLEANUP_ONLY=false
 AWS_DATABASE_NAME="fis_qa01"  # Default AWS database name from config
 
-# Kafka and data generation flags
-USE_KAFKA=false
-BENCHMARK_EVENTS=100
-BENCHMARK_UNIQUE_MD5=10
+# Data generation flags
 USE_EXISTING_DATA=false
-KAFKA_HOST="kafka01.qa01-mp-npe.nc1.iad0.nsscloud.net:9092"  # Default Kafka host
 
 # Tunnel PIDs for cleanup
 MP_TUNNEL_PID=""
@@ -285,28 +281,12 @@ parse_args() {
                 AWS_DATABASE_NAME="$2"
                 shift 2
                 ;;
-            --use-kafka)
-                USE_KAFKA=true
-                shift
-                ;;
-            --benchmark-events)
-                BENCHMARK_EVENTS="$2"
-                shift 2
-                ;;
-            --benchmark-unique-md5)
-                BENCHMARK_UNIQUE_MD5="$2"
-                shift 2
-                ;;
             --use-existing-data)
                 USE_EXISTING_DATA=true
                 shift
                 ;;
             --tenant-id)
                 TEST_TENANT_ID="$2"
-                shift 2
-                ;;
-            --kafka-host)
-                KAFKA_HOST="$2"
                 shift 2
                 ;;
             --segments)
@@ -623,135 +603,6 @@ verify_tenant_has_data() {
     fi
 }
 
-wait_for_updater_processing() {
-    local tenant_id=$1
-    local expected_rows=$2
-    local db_name="fis"
-    local mp_host="127.0.0.1"
-    local mp_port="${MP_LOCAL_PORT}"
-    
-    print_info "Waiting for updater to process events and insert data into fis_aggr..."
-    print_info "Expected rows: ${expected_rows} (may be less due to unique MD5 hashes)"
-    
-    local max_wait=300  # 5 minutes
-    local elapsed=0
-    local poll_interval=5
-    local last_count=0
-    
-    export MYSQL_PWD="${MP_PASSWORD}"
-    
-    while [ $elapsed -lt $max_wait ]; do
-        local count=$(timeout 5 bash -c "mysql -h ${mp_host} -P ${mp_port} -u fis -N -e \"SELECT COUNT(*) FROM ${db_name}.fis_aggr WHERE tenantid = ${tenant_id};\" ${db_name} 2>/dev/null" || echo "0")
-        
-        if [ "$count" -gt 0 ]; then
-            if [ "$count" -ne "$last_count" ]; then
-                print_info "Found ${count} rows for tenant ${tenant_id} (waiting for data to stabilize...)"
-                last_count=$count
-                # Reset elapsed when we see new data
-                elapsed=0
-            else
-                # Count hasn't changed, data is stable
-                print_info "Data stabilized: ${count} rows for tenant ${tenant_id}"
-                return 0
-            fi
-        fi
-        
-        sleep $poll_interval
-        elapsed=$((elapsed + poll_interval))
-        
-        if [ $((elapsed % 30)) -eq 0 ]; then
-            print_info "Still waiting... (${elapsed}s elapsed, found ${count} rows)"
-        fi
-    done
-    
-    # Final check
-    local final_count=$(timeout 5 bash -c "mysql -h ${mp_host} -P ${mp_port} -u fis -N -e \"SELECT COUNT(*) FROM ${db_name}.fis_aggr WHERE tenantid = ${tenant_id};\" ${db_name} 2>/dev/null" || echo "0")
-    
-    if [ "$final_count" -gt 0 ]; then
-        print_info "Found ${final_count} rows for tenant ${tenant_id} after ${elapsed}s"
-        return 0
-    else
-        print_warn "No data found for tenant ${tenant_id} after ${elapsed}s (updater may still be processing)"
-        return 1
-    fi
-}
-
-generate_benchmark_data_via_kafka() {
-    print_info "Generating benchmark data via Kafka..."
-    
-    local tenant_id=${TEST_TENANT_ID}
-    local events=${BENCHMARK_EVENTS}
-    local unique_md5=${BENCHMARK_UNIQUE_MD5}
-    
-    # Find kafka-gen binary (local build or in pod)
-    local kafka_gen_bin=""
-    if [ -f "$PROJECT_ROOT/cmd/kafka-gen/kafka-gen" ]; then
-        kafka_gen_bin="$PROJECT_ROOT/cmd/kafka-gen/kafka-gen"
-    elif [ -f "/ns/updater/kafka-gen" ]; then
-        kafka_gen_bin="/ns/updater/kafka-gen"
-    else
-        # Try to build it
-        print_info "Building kafka-gen binary..."
-        cd "$PROJECT_ROOT"
-        if go build -tags dynamic -o "$PROJECT_ROOT/cmd/kafka-gen/kafka-gen" ./cmd/kafka-gen 2>/dev/null; then
-            kafka_gen_bin="$PROJECT_ROOT/cmd/kafka-gen/kafka-gen"
-        else
-            print_error "kafka-gen binary not found and build failed"
-            return 1
-        fi
-    fi
-    
-    print_info "Using kafka-gen: $kafka_gen_bin"
-    print_info "Generating ${events} events for tenant ${tenant_id} with ${unique_md5} unique MD5 hashes..."
-    print_info "Kafka host: ${KAFKA_HOST}"
-    
-    # Generate events via Kafka
-    # For tunnel mode, we need to SSH to Kafka node to run kafka-gen
-    # Copy binary to Kafka node and execute there
-    if [ "$USE_TUNNELS" = true ]; then
-        print_info "Running kafka-gen via SSH to Kafka node..."
-        
-        # Extract Kafka hostname (without port for SSH)
-        local kafka_hostname=$(echo ${KAFKA_HOST} | cut -d: -f1)
-        
-        # Copy kafka-gen binary to Kafka node
-        print_info "Copying kafka-gen binary to Kafka node..."
-        if ! tsh scp --cluster ${MP_CLUSTER} "$kafka_gen_bin" ${kafka_hostname}:/tmp/kafka-gen 2>/dev/null; then
-            print_error "Failed to copy kafka-gen to Kafka node"
-            return 1
-        fi
-        
-        # Make it executable and run it
-        print_info "Executing kafka-gen on Kafka node..."
-        tsh ssh --cluster ${MP_CLUSTER} ${kafka_hostname} \
-            "chmod +x /tmp/kafka-gen && /tmp/kafka-gen --events ${events} --tenant ${tenant_id} --unique-md5 ${unique_md5} --bootstrap ${KAFKA_HOST} --quiet && rm -f /tmp/kafka-gen"
-        
-        local kafka_result=$?
-    else
-        # Local execution (Kafka accessible locally)
-        print_info "Running kafka-gen locally..."
-        "$kafka_gen_bin" \
-            --events ${events} \
-            --tenant ${tenant_id} \
-            --unique-md5 ${unique_md5} \
-            --bootstrap ${KAFKA_HOST}
-        
-        fi
-    
-    if [ $kafka_result -ne 0 ]; then
-        print_error "Failed to generate events via Kafka"
-        return 1
-    fi
-    
-    print_info "Events generated successfully, waiting for updater to process..."
-    
-    # Wait for updater to process events
-    # Expected rows = unique_md5 (since same MD5 updates same row)
-    wait_for_updater_processing ${tenant_id} ${unique_md5}
-    
-    return $?
-}
-
 cleanup_test_data() {
     print_info "Cleaning up test records from qa01 MariaDB (via tunnel)..."
     
@@ -760,36 +611,18 @@ cleanup_test_data() {
     local mp_host="127.0.0.1"
     local mp_port="${MP_LOCAL_PORT}"
     
-    # Check if this is Kafka-generated data (by hash prefix)
+    # Cleanup all data for tenant
+    print_info "Cleaning up all test records for tenant ${tenant_id}..."
     export MYSQL_PWD="${MP_PASSWORD}"
-    local kafka_count=$(timeout 5 bash -c "mysql -h ${mp_host} -P ${mp_port} -u fis -N -e \"SELECT COUNT(*) FROM ${db_name}.fis_aggr WHERE tenantid = ${tenant_id} AND hash LIKE 'md5_loadtest_%';\" ${db_name} 2>/dev/null" || echo "0")
+    local deleted=$(timeout 10 bash -c "mysql -h ${mp_host} -P ${mp_port} -u fis -N -e \"DELETE FROM ${db_name}.fis_aggr WHERE tenantid = ${tenant_id}; SELECT ROW_COUNT();\" ${db_name} 2>&1")
+    local cleanup_result=$?
     
-    if [ "$kafka_count" -gt 0 ]; then
-        # Cleanup Kafka-generated data by hash prefix
-        print_info "Cleaning up Kafka-generated test data (hash prefix: md5_loadtest_%)..."
-        local deleted=$(timeout 10 bash -c "mysql -h ${mp_host} -P ${mp_port} -u fis -N -e \"DELETE FROM ${db_name}.fis_aggr WHERE tenantid = ${tenant_id} AND hash LIKE 'md5_loadtest_%'; SELECT ROW_COUNT();\" ${db_name} 2>&1")
-        local cleanup_result=$?
-        
-        if [ $cleanup_result -eq 0 ]; then
-            print_info "Cleaned up ${deleted} Kafka-generated test records for tenant ${tenant_id}"
-            return 0
-        else
-            print_warn "Cleanup may have failed: $deleted"
-            return 1
-        fi
+    if [ $cleanup_result -eq 0 ]; then
+        print_info "Cleaned up ${deleted} test records from qa01 MariaDB for tenant ${tenant_id}"
+        return 0
     else
-        # Cleanup all data for tenant
-        print_info "Cleaning up all test records for tenant ${tenant_id}..."
-        local deleted=$(timeout 10 bash -c "mysql -h ${mp_host} -P ${mp_port} -u fis -N -e \"DELETE FROM ${db_name}.fis_aggr WHERE tenantid = ${tenant_id}; SELECT ROW_COUNT();\" ${db_name} 2>&1")
-        local cleanup_result=$?
-        
-        if [ $cleanup_result -eq 0 ]; then
-            print_info "Cleaned up ${deleted} test records from qa01 MariaDB for tenant ${tenant_id}"
-            return 0
-        else
-            print_warn "Cleanup may have failed: $deleted"
-            return 1
-        fi
+        print_warn "Cleanup may have failed: $deleted"
+        return 1
     fi
 }
 
@@ -1461,11 +1294,7 @@ main() {
         setup_tunnels || exit 1
         
         # Determine data generation method
-        if [ "$USE_KAFKA" = true ]; then
-            # Generate data via Kafka
-            print_info "Using Kafka-based data generation"
-            generate_benchmark_data_via_kafka || exit 1
-        elif [ "$USE_EXISTING_DATA" = true ]; then
+        if [ "$USE_EXISTING_DATA" = true ]; then
             # Use existing tenant data
             print_info "Using existing tenant data"
             if [ -z "$TEST_TENANT_ID" ] || [ "$TEST_TENANT_ID" = "999999" ]; then
@@ -1498,8 +1327,7 @@ main() {
                     print_error "Tenant ${TEST_TENANT_ID} has no data."
                     print_error "Please use one of the following options:"
                     print_error "  1. Use --use-existing-data with a tenant that has data"
-                    print_error "  2. Use --use-kafka to generate test data via Kafka"
-                    print_error "  3. Use --skip-data-generation to skip data generation"
+                    print_error "  2. Use --skip-data-generation to skip data generation"
                     exit 1
                 fi
             else
@@ -1507,8 +1335,7 @@ main() {
                 print_error "No tenant ID specified and no data generation method selected."
                 print_error "Please use one of the following options:"
                 print_error "  1. Use --use-existing-data (auto-detects tenant with data)"
-                print_error "  2. Use --use-kafka to generate test data via Kafka"
-                print_error "  3. Use --skip-data-generation to skip data generation"
+                print_error "  2. Use --skip-data-generation to skip data generation"
                 exit 1
             fi
         else
@@ -1522,12 +1349,12 @@ main() {
     fi
     
     # Initialize schema only in Docker mode (qa01 already has schema)
-    if [ "$USE_TUNNELS" != true ] && [ "$SKIP_DATA_GENERATION" != true ] && [ "$USE_KAFKA" != true ] && [ "$USE_EXISTING_DATA" != true ]; then
+    if [ "$USE_TUNNELS" != true ] && [ "$SKIP_DATA_GENERATION" != true ] && [ "$USE_EXISTING_DATA" != true ]; then
         initialize_schema || exit 1
     fi
     
-    # Skip test data generation - we only support --use-kafka or --use-existing-data now
-    # (benchmark/direct INSERT feature was removed)
+    # Skip test data generation - we only support --use-existing-data now
+    # (benchmark/direct INSERT and Kafka features were removed)
     
     # Run migration
     run_migration || exit 1
