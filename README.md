@@ -297,7 +297,7 @@ The Aurora MySQL cluster needs one of the following parameters configured:
 
 The `verify-migration.sh` script provides a complete end-to-end migration test that:
 
-1. Uses existing data from MariaDB (or skips data generation)
+1. Uses existing data from MariaDB
 2. Dumps CSV files from MariaDB
 3. Uploads CSV files to S3
 4. Executes LOAD DATA FROM S3 on Aurora MySQL (optional)
@@ -329,7 +329,7 @@ The `verify-migration.sh` script provides a complete end-to-end migration test t
 **Flags explained:**
 
 - `--use-tunnels qa01`: Auto-configures qa01 tunnel settings (jump/target/S3/region)
-- `--use-existing-data`: Use existing tenant data, auto-detect tenant (no data generation)
+- `--use-existing-data`: Use existing tenant data, auto-detect tenant
 - `--mp-password`: MariaDB password for NPE (required)
 - `--aws-mysql-user`, `--aws-mysql-secret`, `--aws-mysql-region`: Aurora MySQL connection (for SQL execution)
 - `--aws-database`: Aurora MySQL database name
@@ -358,7 +358,7 @@ The `verify-migration.sh` script provides a complete end-to-end migration test t
 **Flags explained:**
 
 - `--tenant-id 1234`: Explicitly specify tenant ID (overrides auto-detection)
-- `--use-existing-data`: Use existing data (no data generation)
+- `--use-existing-data`: Use existing data
 - Other flags same as Example 1
 
 **Example 3: PE (Production - fr4) - Export only, no SQL execution**
@@ -388,7 +388,6 @@ The `verify-migration.sh` script provides a complete end-to-end migration test t
 
 - `--use-existing-data`: Use existing tenant data, don't generate (default: false)
 - `--tenant-id N`: Specify tenant ID (optional, auto-detect if not provided)
-- `--skip-data-generation`: Skip data generation entirely
 
 ## Local Execution with SSH Tunnels
 
@@ -607,7 +606,7 @@ tsh login
 # Flags:
 #   --use-tunnels qa01: Use SSH tunnels for qa01 (NPE) environment (auto-configures jump/target/S3/region)
 #   --mp-password: MariaDB password (required)
-#   --use-existing-data: Use existing tenant data, auto-detect tenant (no data generation)
+#   --use-existing-data: Use existing tenant data, auto-detect tenant
 # Note: No --tenant-id = auto-detects tenant with data
 # Note: No --aws-mysql-* flags = SQL execution skipped
 ```
@@ -686,7 +685,7 @@ tsh login
 # Flags:
 #   --use-tunnels fr4: Use SSH tunnels for fr4 (PE) environment (auto-configures jump/target/S3/region)
 #   --mp-password: MariaDB password (required)
-#   --use-existing-data: Use existing tenant data, auto-detect tenant (no data generation)
+#   --use-existing-data: Use existing tenant data, auto-detect tenant
 # Note: No --tenant-id = auto-detects tenant with data (works in PE too)
 # Note: No --aws-mysql-* flags = SQL execution skipped, manager executes on EC2
 ```

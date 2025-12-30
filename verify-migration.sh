@@ -85,7 +85,6 @@ KEEP_CONTAINERS=false
 USE_TUNNELS=false
 SKIP_TUNNEL_SETUP=false
 SKIP_BENCHMARK=false
-SKIP_DATA_GENERATION=false
 CLEANUP_ONLY=false
 AWS_DATABASE_NAME="fis_qa01"  # Default AWS database name from config
 
@@ -1315,7 +1314,7 @@ main() {
                 print_info "Using auto-detected tenant ID: ${TEST_TENANT_ID}"
             fi
             verify_tenant_has_data ${TEST_TENANT_ID} || exit 1
-        elif [ "$SKIP_DATA_GENERATION" != true ]; then
+        else
             # Check if tenant already has data - if so, use it automatically
             if [ -n "$TEST_TENANT_ID" ] && [ "$TEST_TENANT_ID" != "999999" ]; then
                 # User specified a tenant ID - check if it has data
@@ -1325,21 +1324,15 @@ main() {
                 else
                     # Tenant has no data - require explicit flag
                     print_error "Tenant ${TEST_TENANT_ID} has no data."
-                    print_error "Please use one of the following options:"
-                    print_error "  1. Use --use-existing-data with a tenant that has data"
-                    print_error "  2. Use --skip-data-generation to skip data generation"
+                    print_error "Please use --use-existing-data with a tenant that has data"
                     exit 1
                 fi
             else
                 # No tenant ID specified - require explicit flag
                 print_error "No tenant ID specified and no data generation method selected."
-                print_error "Please use one of the following options:"
-                print_error "  1. Use --use-existing-data (auto-detects tenant with data)"
-                print_error "  2. Use --skip-data-generation to skip data generation"
+                print_error "Please use --use-existing-data (auto-detects tenant with data)"
                 exit 1
             fi
-        else
-            print_info "Skipping test data generation (using existing data)"
         fi
     fi
     
@@ -1349,7 +1342,7 @@ main() {
     fi
     
     # Initialize schema only in Docker mode (qa01 already has schema)
-    if [ "$USE_TUNNELS" != true ] && [ "$SKIP_DATA_GENERATION" != true ] && [ "$USE_EXISTING_DATA" != true ]; then
+    if [ "$USE_TUNNELS" != true ] && [ "$USE_EXISTING_DATA" != true ]; then
         initialize_schema || exit 1
     fi
     
