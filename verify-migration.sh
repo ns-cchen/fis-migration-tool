@@ -268,10 +268,6 @@ parse_args() {
                 SKIP_BENCHMARK=true
                 shift
                 ;;
-            --skip-data-generation)
-                SKIP_DATA_GENERATION=true
-                shift
-                ;;
             --cleanup-only)
                 CLEANUP_ONLY=true
                 shift
