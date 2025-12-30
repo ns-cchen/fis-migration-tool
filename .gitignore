@@ -1,0 +1,53 @@
+# IDE and Editor directories
+.cursor/
+.idea/
+
+# Version management
+.tool-versions
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+cmd/migration/migration
+cmd/kafka-gen/kafka-gen
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go module cache (optional - usually not committed)
+# go.sum is committed, but go mod cache is not
+
+# Environment and config files with secrets
+*.env
+*.env.local
+migration-config.yaml
+!migration-config.yaml.example
+
+# Log files
+*.log
+/tmp/migration-*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+

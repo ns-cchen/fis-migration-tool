@@ -1,0 +1,41 @@
+# Migration Tool Configuration Example
+# Copy this file to migration-config.yaml and customize for your environment
+
+# Tenant & Table
+tenant_id: 1234
+table_name: fis_aggr
+
+# MariaDB Connection
+mariadb_host: localhost:3306
+mariadb_port: 3306
+mariadb_user: root
+mariadb_password: password
+mariadb_database: fis
+
+# S3 Configuration
+s3_bucket: my-migration-bucket
+s3_prefix: fis-migration
+aws_region: us-east-1
+
+# Segmentation & Parallelism
+segments: 16
+max_parallel_segments: 8
+batch_size: 500000
+
+# Optional: Aurora MySQL Connection (for SQL execution)
+aurora_host: aurora-cluster.region.rds.amazonaws.com
+aurora_port: 3306
+aurora_user: admin
+aurora_secret: rds!cluster-xxx
+aurora_region: us-east-1
+aurora_database: fis
+execute_sql: false
+sql_exec_timeout: 300
+
+# Benchmark Mode
+benchmark_mode: false
+benchmark_rows: 1000000
+benchmark_tenant_id: 999999
+
+
+
