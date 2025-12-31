@@ -131,43 +131,48 @@ func main() {
 		fmt.Printf("SQL execution: Completed\n")
 	} else {
 		fmt.Printf("SQL execution: Skipped (use -execute-sql to enable)\n")
-		fmt.Printf("\n")
-		fmt.Printf("=== Next Steps: Execute SQL on EC2 ===\n")
-		fmt.Printf("The SQL file has been uploaded to S3. To load data into Aurora MySQL:\n")
-		fmt.Printf("\n")
-		fmt.Printf("1. Download SQL file from S3:\n")
-		fmt.Printf("   aws s3 cp s3://%s/%s ./load-data-tenant-%d.sql\n", cfg.S3Bucket, sqlS3Key, cfg.TenantID)
-		fmt.Printf("\n")
-		fmt.Printf("2. Connect to Aurora MySQL (on EC2 or locally):\n")
-		if cfg.AuroraHost != "" {
-			fmt.Printf("   mysql -h %s", cfg.AuroraHost)
-			if cfg.AuroraPort > 0 && cfg.AuroraPort != 3306 {
-				fmt.Printf(" -P %d", cfg.AuroraPort)
-			}
-			fmt.Printf(" -u %s", cfg.AuroraUser)
-			if cfg.AuroraDatabase != "" {
-				fmt.Printf(" -D %s", cfg.AuroraDatabase)
+		// Only print "Next Steps" if not in quiet mode
+		if !cfg.Quiet {
+			fmt.Printf("\n")
+			fmt.Printf("=== Next Steps: Execute SQL on EC2 ===\n")
+			fmt.Printf("The SQL file has been uploaded to S3. To load data into Aurora MySQL:\n")
+			fmt.Printf("\n")
+			fmt.Printf("1. Download SQL file from S3:\n")
+			fmt.Printf("   aws s3 cp s3://%s/%s ./load-data-tenant-%d.sql\n", cfg.S3Bucket, sqlS3Key, cfg.TenantID)
+			fmt.Printf("\n")
+			fmt.Printf("2. Connect to Aurora MySQL (on EC2 or locally):\n")
+			if cfg.AuroraHost != "" {
+				fmt.Printf("   mysql -h %s", cfg.AuroraHost)
+				if cfg.AuroraPort > 0 && cfg.AuroraPort != 3306 {
+					fmt.Printf(" -P %d", cfg.AuroraPort)
+				}
+				fmt.Printf(" -u %s", cfg.AuroraUser)
+				if cfg.AuroraDatabase != "" {
+					fmt.Printf(" -D %s", cfg.AuroraDatabase)
+				}
+				fmt.Printf("\n")
+			} else {
+				fmt.Printf("   mysql -h <aurora-host> -u <user> -D <database>\n")
 			}
 			fmt.Printf("\n")
-		} else {
-			fmt.Printf("   mysql -h <aurora-host> -u <user> -D <database>\n")
+			fmt.Printf("3. Execute SQL file:\n")
+			fmt.Printf("   source ./load-data-tenant-%d.sql\n", cfg.TenantID)
+			fmt.Printf("   # OR\n")
+			fmt.Printf("   mysql ... < ./load-data-tenant-%d.sql\n", cfg.TenantID)
+			fmt.Printf("\n")
+			fmt.Printf("⚠️  IMPORTANT: Aurora MySQL IAM Role Required\n")
+			fmt.Printf("   Before executing SQL, ensure Aurora MySQL cluster has IAM role configured:\n")
+			fmt.Printf("   - Parameter: aurora_load_from_s3_role or aws_default_s3_role\n")
+			fmt.Printf("   - IAM role must have S3 read permissions for bucket: %s\n", cfg.S3Bucket)
+			fmt.Printf("   - See README.md for detailed IAM role setup instructions\n")
+			fmt.Printf("   - Error 63985 indicates IAM role is not configured\n")
+			fmt.Printf("\n")
+			fmt.Printf("=======================\n")
 		}
-		fmt.Printf("\n")
-		fmt.Printf("3. Execute SQL file:\n")
-		fmt.Printf("   source ./load-data-tenant-%d.sql\n", cfg.TenantID)
-		fmt.Printf("   # OR\n")
-		fmt.Printf("   mysql ... < ./load-data-tenant-%d.sql\n", cfg.TenantID)
-		fmt.Printf("\n")
-		fmt.Printf("⚠️  IMPORTANT: Aurora MySQL IAM Role Required\n")
-		fmt.Printf("   Before executing SQL, ensure Aurora MySQL cluster has IAM role configured:\n")
-		fmt.Printf("   - Parameter: aurora_load_from_s3_role or aws_default_s3_role\n")
-		fmt.Printf("   - IAM role must have S3 read permissions for bucket: %s\n", cfg.S3Bucket)
-		fmt.Printf("   - See README.md for detailed IAM role setup instructions\n")
-		fmt.Printf("   - Error 63985 indicates IAM role is not configured\n")
-		fmt.Printf("\n")
+	}
+	if !cfg.Quiet {
 		fmt.Printf("=======================\n")
 	}
-	fmt.Printf("=======================\n")
 
 	logger.Info("Migration completed successfully")
 }

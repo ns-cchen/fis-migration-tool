@@ -31,18 +31,18 @@ type Config struct {
 	AWSRegion string
 
 	// Optional: Aurora connection for SQL execution
-	AuroraHost                string
-	AuroraPort                int
-	AuroraUser                string
+	AuroraHost                 string
+	AuroraPort                 int
+	AuroraUser                 string
 	AuroraSecretsManagerSecret string // AWS Secrets Manager secret name (e.g., "rds!cluster-xxx")
-	AuroraRegion              string // AWS region for Secrets Manager
-	AuroraDatabase            string
-	ExecuteSQL                bool // Flag to execute LOAD DATA FROM S3
+	AuroraRegion               string // AWS region for Secrets Manager
+	AuroraDatabase             string
+	ExecuteSQL                 bool // Flag to execute LOAD DATA FROM S3
 
 	// Segmentation & Parallelism
-	Segments          int // Default: 16
-	MaxParallelSegs   int // Default: 8
-	BatchSize         int // Default: 100000
+	Segments        int // Default: 16
+	MaxParallelSegs int // Default: 8
+	BatchSize       int // Default: 100000
 
 	// CSV Options
 	CSVDelimiter string // Default: ","
@@ -50,6 +50,9 @@ type Config struct {
 
 	// SQL Execution Timeout (seconds)
 	SQLExecTimeout int // Default: 300 (5 minutes)
+
+	// Output Control
+	Quiet bool // Suppress "Next Steps" instructions (useful when run via script)
 }
 
 // LoadConfig loads configuration from CLI flags, environment variables, and YAML file.
@@ -83,6 +86,7 @@ func LoadConfig() (*Config, error) {
 	auroraDatabase := flag.String("aurora-database", "fis", "Aurora MySQL database name (default: fis)")
 	executeSQL := flag.Bool("execute-sql", false, "Execute LOAD DATA FROM S3 after generating SQL")
 	sqlExecTimeout := flag.Int("sql-exec-timeout", 300, "SQL execution timeout in seconds (default: 300)")
+	quiet := flag.Bool("quiet", false, "Suppress 'Next Steps' instructions (useful when run via script)")
 
 	flag.Parse()
 
@@ -165,6 +169,9 @@ func LoadConfig() (*Config, error) {
 	if *sqlExecTimeout > 0 {
 		cfg.SQLExecTimeout = *sqlExecTimeout
 	}
+	if *quiet {
+		cfg.Quiet = true
+	}
 
 	// Set defaults
 	if cfg.Segments == 0 {
@@ -242,27 +249,27 @@ func loadFromYAML(cfg *Config, filepath string) error {
 	}
 
 	var yamlCfg struct {
-		TenantID                 int    `yaml:"tenant_id"`
-		TableName                string `yaml:"table_name"`
-		MariaDBHost              string `yaml:"mariadb_host"`
-		MariaDBPort              int    `yaml:"mariadb_port"`
-		MariaDBUser              string `yaml:"mariadb_user"`
-		MariaDBPassword          string `yaml:"mariadb_password"`
-		MariaDBDatabase          string `yaml:"mariadb_database"`
-		S3Bucket                 string `yaml:"s3_bucket"`
-		S3Prefix                 string `yaml:"s3_prefix"`
-		AWSRegion                string `yaml:"aws_region"`
-		AuroraHost               string `yaml:"aurora_host"`
-		AuroraPort                int    `yaml:"aurora_port"`
-		AuroraUser                string `yaml:"aurora_user"`
+		TenantID                   int    `yaml:"tenant_id"`
+		TableName                  string `yaml:"table_name"`
+		MariaDBHost                string `yaml:"mariadb_host"`
+		MariaDBPort                int    `yaml:"mariadb_port"`
+		MariaDBUser                string `yaml:"mariadb_user"`
+		MariaDBPassword            string `yaml:"mariadb_password"`
+		MariaDBDatabase            string `yaml:"mariadb_database"`
+		S3Bucket                   string `yaml:"s3_bucket"`
+		S3Prefix                   string `yaml:"s3_prefix"`
+		AWSRegion                  string `yaml:"aws_region"`
+		AuroraHost                 string `yaml:"aurora_host"`
+		AuroraPort                 int    `yaml:"aurora_port"`
+		AuroraUser                 string `yaml:"aurora_user"`
 		AuroraSecretsManagerSecret string `yaml:"aurora_secret"`
-		AuroraRegion              string `yaml:"aurora_region"`
-		AuroraDatabase            string `yaml:"aurora_database"`
-		ExecuteSQL                bool   `yaml:"execute_sql"`
-		Segments                  int    `yaml:"segments"`
-		MaxParallelSegs           int    `yaml:"max_parallel_segments"`
-		BatchSize                 int    `yaml:"batch_size"`
-		SQLExecTimeout            int    `yaml:"sql_exec_timeout"`
+		AuroraRegion               string `yaml:"aurora_region"`
+		AuroraDatabase             string `yaml:"aurora_database"`
+		ExecuteSQL                 bool   `yaml:"execute_sql"`
+		Segments                   int    `yaml:"segments"`
+		MaxParallelSegs            int    `yaml:"max_parallel_segments"`
+		BatchSize                  int    `yaml:"batch_size"`
+		SQLExecTimeout             int    `yaml:"sql_exec_timeout"`
 	}
 
 	if err := yaml.Unmarshal(data, &yamlCfg); err != nil {
@@ -458,4 +465,3 @@ func (c *Config) ReadMariaDBAuth(authFile string) error {
 	c.MariaDBPassword = auth.Password
 	return nil
 }
-

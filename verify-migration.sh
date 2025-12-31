@@ -21,7 +21,6 @@ PROJECT_ROOT="$SCRIPT_DIR"
 # Configuration
 TENANT_ID=999999  # Default: auto-detect tenant with data
 TABLE_NAME="fis_aggr"
-AWS_REGION_DEFAULT="us-east-1"
 SEGMENTS=16
 MAX_PARALLEL=8
 
@@ -66,12 +65,11 @@ S3_BUCKET=""
 AWS_REGION=""
 
 # AWS MySQL connection (from environment or CLI flags)
-AWS_MYSQL_HOST="${FIS_AWS_MYSQL_HOST:-}"
 AWS_MYSQL_USER="${FIS_AWS_MYSQL_USER:-}"
 AWS_MYSQL_SECRET="${FIS_AWS_MYSQL_SECRET:-}"
 AWS_MYSQL_REGION="${FIS_AWS_MYSQL_REGION:-}"
 SKIP_TUNNEL_SETUP=false
-CLEANUP_ONLY=false
+EXECUTE_SQL=false  # Flag to execute SQL verification locally (default: false, manager will execute on EC2)
 AWS_DATABASE_NAME="fis_qa01"  # Default AWS database name from config
 
 # Tunnel PIDs for cleanup
@@ -152,10 +150,6 @@ parse_args() {
                 SKIP_TUNNEL_SETUP=true
                 shift
                 ;;
-            --aws-mysql-host)
-                AWS_MYSQL_HOST="$2"
-                shift 2
-                ;;
             --aws-mysql-user)
                 AWS_MYSQL_USER="$2"
                 shift 2
@@ -166,22 +160,6 @@ parse_args() {
                 ;;
             --aws-mysql-region)
                 AWS_MYSQL_REGION="$2"
-                shift 2
-                ;;
-            --mp-jump)
-                MP_MARIADB_JUMP="$2"
-                shift 2
-                ;;
-            --mp-target)
-                MP_MARIADB_TARGET="$2"
-                shift 2
-                ;;
-            --aws-jump)
-                AWS_AURORA_JUMP="$2"
-                shift 2
-                ;;
-            --aws-target)
-                AWS_AURORA_TARGET="$2"
                 shift 2
                 ;;
             --mp-port)
@@ -208,13 +186,13 @@ parse_args() {
                 AWS_LOCAL_PORT="$2"
                 shift 2
                 ;;
-            --cleanup-only)
-                CLEANUP_ONLY=true
-                shift
-                ;;
             --aws-database)
                 AWS_DATABASE_NAME="$2"
                 shift 2
+                ;;
+            --execute-sql)
+                EXECUTE_SQL=true
+                shift
                 ;;
             --tenant-id)
                 TENANT_ID="$2"
@@ -440,9 +418,8 @@ setup_tunnels() {
         return 1
     fi
     
-    # Start AWS tunnel (optional - only for NPE with SQL execution)
-    # For PE, manager executes SQL on EC2, so AWS tunnel is not needed
-    if [ -n "$AWS_MYSQL_USER" ] && [ -n "$AWS_MYSQL_SECRET" ]; then
+    # Start AWS tunnel (optional - only if SQL execution is enabled)
+    if [ "$EXECUTE_SQL" = true ]; then
         if ! start_aws_tunnel; then
             # Clean up MP tunnel if AWS tunnel fails
             if [ -n "$MP_TUNNEL_PID" ]; then
@@ -502,29 +479,6 @@ verify_tenant_has_data() {
     fi
 }
 
-cleanup_test_data() {
-    print_info "Cleaning up test records from qa01 MariaDB (via tunnel)..."
-    
-    local tenant_id=${TENANT_ID}
-    local db_name="fis"
-    local mp_host="127.0.0.1"
-    local mp_port="${MP_LOCAL_PORT}"
-    
-    # Cleanup all data for tenant
-    print_info "Cleaning up all test records for tenant ${tenant_id}..."
-    export MYSQL_PWD="${MP_PASSWORD}"
-    local deleted=$(timeout 10 bash -c "mysql -h ${mp_host} -P ${mp_port} -u fis -N -e \"DELETE FROM ${db_name}.fis_aggr WHERE tenantid = ${tenant_id}; SELECT ROW_COUNT();\" ${db_name} 2>&1")
-    local cleanup_result=$?
-    
-    if [ $cleanup_result -eq 0 ]; then
-        print_info "Cleaned up ${deleted} test records from qa01 MariaDB for tenant ${tenant_id}"
-        return 0
-    else
-        print_warn "Cleanup may have failed: $deleted"
-        return 1
-    fi
-}
-
 
 run_migration() {
     print_info "Running migration tool..."
@@ -561,12 +515,13 @@ run_migration() {
     # Set AWS region
     export AWS_DEFAULT_REGION=${aws_region}
     
-    # Run migration (without execute-sql for PE mode - manager will execute on EC2)
+    # Run migration (manager will execute SQL on EC2 if needed)
     # Ensure /tmp directory exists for logger
     mkdir -p /tmp
     
     # Change to project root to ensure logger can write to /tmp
     cd "$PROJECT_ROOT" || exit 1
+    # Use -quiet flag to suppress "Next Steps" (script will show unified output)
     "$migration_bin" \
         -tenant-id ${TENANT_ID} \
         -table-name ${TABLE_NAME} \
@@ -577,7 +532,8 @@ run_migration() {
         -s3-bucket ${s3_bucket} \
         -aws-region ${aws_region} \
         -segments ${SEGMENTS} \
-        -max-parallel-segments ${MAX_PARALLEL}
+        -max-parallel-segments ${MAX_PARALLEL} \
+        -quiet
     local migration_result=$?
     cd - > /dev/null || true
     
@@ -703,7 +659,6 @@ verify_aurora_load() {
     print_info "Region: $AWS_MYSQL_REGION"
     
     # Set environment variables for migration tool to use
-    export FIS_AWS_MYSQL_HOST="$aws_mysql_host"
     export FIS_AWS_MYSQL_USER="$AWS_MYSQL_USER"
     export FIS_AWS_MYSQL_SECRET="$AWS_MYSQL_SECRET"
     export FIS_AWS_MYSQL_REGION="$AWS_MYSQL_REGION"
@@ -1019,32 +974,12 @@ main() {
     fi
     
     print_info "=== Migration Tool Verification ==="
-    
-    # Handle cleanup-only mode
-    if [ "$CLEANUP_ONLY" = true ]; then
-        print_info "Running cleanup only..."
-        check_tsh || exit 1
-        
-        # Setup tunnels if not skipping
-        if [ "$SKIP_TUNNEL_SETUP" != true ]; then
-            setup_tunnels || exit 1
-        else
-            # Just verify tunnels work
-            if ! test_tunnel_connectivity; then
-                print_error "Tunnels are not working. Remove --skip-tunnel-setup to create new tunnels."
-                exit 1
-            fi
-        fi
-        
-        cleanup_test_data || exit 1
-        print_info "=== Cleanup completed ==="
-        return 0
-    fi
-    
     print_info "Mode: SSH Tunnels (MariaDB + optional AWS MySQL)"
     print_info "  - MariaDB: via SSH tunnel (localhost:${MP_LOCAL_PORT})"
     print_info "  - S3 bucket: ${S3_BUCKET} (region: ${AWS_REGION})"
-    if [ -z "$AWS_MYSQL_USER" ] || [ -z "$AWS_MYSQL_SECRET" ]; then
+    if [ "$EXECUTE_SQL" = true ]; then
+        print_info "  - SQL execution: Enabled (will execute locally via AWS MySQL tunnel)"
+    else
         print_info "  - SQL execution: Skipped (manager will execute on EC2)"
     fi
     
@@ -1085,14 +1020,37 @@ main() {
     # Run migration
     run_migration || exit 1
     
+    # Show verification results
+    print_info ""
+    print_info "=== Verification Results ==="
     verify_s3_uploads || exit 1
     verify_sql_generation || exit 1
     
-    # Skip SQL execution verification if AWS MySQL connection info not provided (manager will execute on EC2)
-    if [ -z "$AWS_MYSQL_USER" ] || [ -z "$AWS_MYSQL_SECRET" ] || [ -z "$AWS_MYSQL_REGION" ]; then
-        print_info "Skipping SQL execution verification (manager will execute on EC2)"
+    # Execute SQL verification if flag is enabled
+    if [ "$EXECUTE_SQL" = true ]; then
+        # Validate AWS MySQL connection info is provided
+        if [ -z "$AWS_MYSQL_USER" ] || [ -z "$AWS_MYSQL_SECRET" ] || [ -z "$AWS_MYSQL_REGION" ]; then
+            print_error "SQL execution is enabled (--execute-sql) but AWS MySQL connection info is missing"
+            print_error "Please provide:"
+            print_error "  - AWS_MYSQL_USER (or --aws-mysql-user)"
+            print_error "  - AWS_MYSQL_SECRET (or --aws-mysql-secret)"
+            print_error "  - AWS_MYSQL_REGION (or --aws-mysql-region)"
+            exit 1
+        fi
+        
+        # Verify LOAD DATA FROM S3 execution
+        if ! verify_aurora_load; then
+            print_error "LOAD DATA FROM S3 verification failed"
+            exit 1
+        fi
         print_info ""
-        print_info "=== Next Steps for Manager ==="
+        print_info "✅ SQL execution verification completed successfully"
+    else
+        # Skip SQL execution - manager will execute on EC2
+        print_info ""
+        print_info "=== Next Steps: Execute SQL on EC2 ==="
+        print_info "The SQL file has been uploaded to S3. To load data into Aurora MySQL:"
+        print_info ""
         print_info "1. Download SQL file from S3:"
         print_info "   aws s3 cp s3://${S3_BUCKET}/fis-migration/sql/load-data-tenant-${TENANT_ID}.sql ./load-data-tenant-${TENANT_ID}.sql"
         print_info ""
@@ -1103,12 +1061,6 @@ main() {
         print_info "   - IAM role must have S3 read permissions for bucket: ${S3_BUCKET}"
         print_info "   - See README.md for detailed IAM role setup instructions"
         print_info ""
-    else
-        # Mandatory: Verify LOAD DATA FROM S3 execution
-        if ! verify_aurora_load; then
-            print_error "LOAD DATA FROM S3 verification failed (mandatory)"
-            exit 1
-        fi
     fi
     
     # Skip cleanup - we always use existing data
