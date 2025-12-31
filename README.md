@@ -572,9 +572,9 @@ Local testing uses SSH tunnels to connect to real databases without deploying to
 
 #### Prerequisites
 
-- `tsh` (Teleport SSH client) installed and configured
-- Access to qa01 and AWS clusters via Teleport (`tsh login`)
-- AWS credentials configured (for S3 and Secrets Manager)
+- Install `tsh`
+- Install AWS CLI
+- Set up aws configure sso
 - Migration binary built:
 
   ```bash
@@ -587,6 +587,12 @@ Local testing uses SSH tunnels to connect to real databases without deploying to
 
 ```bash
 tsh login
+```
+
+**2. Ensure you're logged into AWS:**
+
+```bash
+aws sso login
 ```
 
 **NPE (Non-Production Environment) Examples:**
