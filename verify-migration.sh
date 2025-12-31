@@ -604,16 +604,6 @@ run_migration() {
     print_info "Migration completed"
 }
 
-verify_csv_files() {
-    print_info "Verifying CSV files..."
-    
-    # Note: CSV files are streamed directly to S3, not stored locally
-    # This function is kept for backward compatibility but doesn't check local files
-    # CSV files are verified via verify_s3_uploads() instead
-    print_info "CSV files are streamed directly to S3 (verified via S3 upload check)"
-    return 0
-}
-
 verify_s3_uploads() {
     print_info "Verifying S3 uploads..."
     
@@ -1134,7 +1124,6 @@ main() {
     # Run migration
     run_migration || exit 1
     
-    verify_csv_files || exit 1
     verify_s3_uploads || exit 1
     verify_sql_generation || exit 1
     
