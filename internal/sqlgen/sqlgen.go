@@ -65,8 +65,8 @@ func ExecuteLoadDataSQL(sqlStatements []string, cfg *config.Config, logger *zap.
 		return fmt.Errorf("no SQL statements to execute")
 	}
 
-	// Load AWS credentials
-	util.LoadAWSCredentialsFromVault()
+	// Load AWS credentials with priority: CLI flags > Env vars > AWS SDK default chain > Vault files
+	util.LoadAWSCredentials(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.AWSSessionToken)
 
 	// Resolve Aurora password from Secrets Manager
 	awsPwd, err := util.ResolveAWSDBPassword(cfg.AuroraSecretsManagerSecret, cfg.AuroraRegion)
@@ -246,4 +246,3 @@ func GenerateAndUploadSQL(csvFiles []exporter.CSVFile, cfg *config.Config, uploa
 
 	return s3Key, nil
 }
-

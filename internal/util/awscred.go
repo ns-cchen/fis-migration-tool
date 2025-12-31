@@ -3,14 +3,15 @@
 package util
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/secretsmanager"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
 // AWS IAM credential file paths (vault-injected for Aurora MySQL)
@@ -23,16 +24,44 @@ const (
 	AWSSQLPasswordEnv = "FIS_AWS_SQL_PASSWORD" //nolint:gosec // env var name, not a credential
 )
 
-// LoadAWSCredentialsFromVault loads AWS IAM credentials from vault-injected files.
-// Env vars take precedence if already set, then vault files are tried.
-// These credentials are used to authenticate with AWS Secrets Manager.
-func LoadAWSCredentialsFromVault() {
-	// Check if already set via environment
+// LoadAWSCredentials loads AWS IAM credentials with the following priority:
+// 1. CLI flags (accessKeyID, secretAccessKey, sessionToken) - highest priority
+// 2. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN)
+// 3. AWS SDK default chain (AWS CLI credentials, SSO cache, IAM roles, etc.)
+// 4. Vault files (/vault/secrets/awsauroramysqlkey, /vault/secrets/awsauroramysqlpass) - fallback
+//
+// Critical: Only sets environment variables if CLI flags are explicitly provided.
+// If no CLI flags, this function does NOT set any environment variables, allowing
+// AWS SDK to use its full default credential chain (SSO, profiles, IAM roles, etc.).
+func LoadAWSCredentials(accessKeyID, secretAccessKey, sessionToken string) {
+	// Priority 1: CLI flags (if provided, set as environment variables)
+	// Only set env vars if at least access key and secret key are provided via CLI
+	if accessKeyID != "" && secretAccessKey != "" {
+		_ = os.Setenv("AWS_ACCESS_KEY_ID", accessKeyID)
+		_ = os.Setenv("AWS_SECRET_ACCESS_KEY", secretAccessKey)
+		// Session token is optional - only set if provided
+		if sessionToken != "" {
+			_ = os.Setenv("AWS_SESSION_TOKEN", sessionToken)
+		}
+		return
+	}
+
+	// Priority 2: Check if already set via environment variables
+	// If env vars are already set, don't interfere - let AWS SDK use them
 	if os.Getenv("AWS_ACCESS_KEY_ID") != "" && os.Getenv("AWS_SECRET_ACCESS_KEY") != "" {
 		return
 	}
 
-	// Try to load from vault files (Aurora-specific paths)
+	// Priority 3: AWS SDK default chain will be used automatically if no CLI flags and no env vars
+	// This includes:
+	// - AWS CLI credentials (~/.aws/credentials, ~/.aws/config)
+	// - AWS SSO cached credentials (~/.aws/sso/cache/ after aws sso login)
+	// - IAM roles (if running on EC2)
+	// - Other credential providers in the default chain
+	// No action needed here - AWS SDK handles this automatically
+
+	// Priority 4: Fallback to vault files (for backward compatibility with Kubernetes deployments)
+	// Only if no CLI flags, no env vars, and AWS SDK default chain is not available
 	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
 		if content, err := os.ReadFile(DefaultAWSAuroraKeyFile); err == nil {
 			_ = os.Setenv("AWS_ACCESS_KEY_ID", strings.TrimSpace(string(content)))
@@ -56,15 +85,16 @@ func GetPasswordFromSecretsManager(secretName, region string) (string, error) {
 		return "", fmt.Errorf("region is required for Secrets Manager")
 	}
 
-	sess, err := session.NewSession(&aws.Config{
-		Region: aws.String(region),
-	})
+	ctx := context.Background()
+	awsCfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(region),
+	)
 	if err != nil {
-		return "", fmt.Errorf("create AWS session: %w", err)
+		return "", fmt.Errorf("create AWS config: %w", err)
 	}
 
-	svc := secretsmanager.New(sess)
-	out, err := svc.GetSecretValue(&secretsmanager.GetSecretValueInput{
+	svc := secretsmanager.NewFromConfig(awsCfg)
+	out, err := svc.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
 		SecretId:     aws.String(secretName),
 		VersionStage: aws.String("AWSCURRENT"),
 	})
@@ -97,4 +127,3 @@ func ResolveAWSDBPassword(secretName, region string) (string, error) {
 	}
 	return GetPasswordFromSecretsManager(secretName, region)
 }
-

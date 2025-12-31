@@ -5,7 +5,7 @@ package s3
 import (
 	"testing"
 
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/netSkope/fis-migration-tool/internal/config"
 	"go.uber.org/zap/zaptest"
 )
@@ -33,7 +33,7 @@ func TestMultipartUploadStream_UploadPart(t *testing.T) {
 		// Test that MultipartUploadStream has correct fields
 		stream := &MultipartUploadStream{
 			partNumber: 1,
-			parts:      []*s3.CompletedPart{},
+			parts:      []types.CompletedPart{},
 		}
 
 		if stream.partNumber != 1 {
@@ -54,4 +54,3 @@ func TestMultipartUploadStream_Complete(t *testing.T) {
 		// In integration tests with LocalStack, we'll test the full flow
 	})
 }
-

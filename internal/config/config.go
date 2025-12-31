@@ -30,6 +30,12 @@ type Config struct {
 	S3Prefix  string
 	AWSRegion string
 
+	// AWS Credentials (optional - for S3 and Secrets Manager access)
+	// Priority: CLI flags > Environment variables > AWS CLI > Vault files
+	AWSAccessKeyID     string
+	AWSSecretAccessKey string
+	AWSSessionToken    string // Optional - only needed for temporary credentials (STS, assume-role, SSO)
+
 	// Optional: Aurora connection for SQL execution
 	AuroraHost                 string
 	AuroraPort                 int
@@ -72,6 +78,9 @@ func LoadConfig() (*Config, error) {
 	s3Bucket := flag.String("s3-bucket", "", "S3 bucket name")
 	s3Prefix := flag.String("s3-prefix", "fis-migration", "S3 key prefix (default: fis-migration)")
 	awsRegion := flag.String("aws-region", "", "AWS region")
+	awsAccessKeyID := flag.String("aws-access-key-id", "", "AWS Access Key ID (optional, can use env vars or AWS CLI)")
+	awsSecretAccessKey := flag.String("aws-secret-access-key", "", "AWS Secret Access Key (optional, can use env vars or AWS CLI)")
+	awsSessionToken := flag.String("aws-session-token", "", "AWS Session Token (optional, only needed for temporary credentials like STS, assume-role, SSO)")
 	segments := flag.Int("segments", 16, "Number of hash segments (default: 16)")
 	maxParallelSegs := flag.Int("max-parallel-segments", 8, "Max parallel segments (default: 8)")
 	batchSize := flag.Int("batch-size", 100000, "Batch size for pagination (default: 100000)")
@@ -135,6 +144,15 @@ func LoadConfig() (*Config, error) {
 	}
 	if *awsRegion != "" {
 		cfg.AWSRegion = *awsRegion
+	}
+	if *awsAccessKeyID != "" {
+		cfg.AWSAccessKeyID = *awsAccessKeyID
+	}
+	if *awsSecretAccessKey != "" {
+		cfg.AWSSecretAccessKey = *awsSecretAccessKey
+	}
+	if *awsSessionToken != "" {
+		cfg.AWSSessionToken = *awsSessionToken
 	}
 	if *segments > 0 {
 		cfg.Segments = *segments
@@ -259,6 +277,9 @@ func loadFromYAML(cfg *Config, filepath string) error {
 		S3Bucket                   string `yaml:"s3_bucket"`
 		S3Prefix                   string `yaml:"s3_prefix"`
 		AWSRegion                  string `yaml:"aws_region"`
+		AWSAccessKeyID             string `yaml:"aws_access_key_id"`
+		AWSSecretAccessKey         string `yaml:"aws_secret_access_key"`
+		AWSSessionToken            string `yaml:"aws_session_token"`
 		AuroraHost                 string `yaml:"aurora_host"`
 		AuroraPort                 int    `yaml:"aurora_port"`
 		AuroraUser                 string `yaml:"aurora_user"`
@@ -306,6 +327,15 @@ func loadFromYAML(cfg *Config, filepath string) error {
 	}
 	if yamlCfg.AWSRegion != "" {
 		cfg.AWSRegion = yamlCfg.AWSRegion
+	}
+	if yamlCfg.AWSAccessKeyID != "" {
+		cfg.AWSAccessKeyID = yamlCfg.AWSAccessKeyID
+	}
+	if yamlCfg.AWSSecretAccessKey != "" {
+		cfg.AWSSecretAccessKey = yamlCfg.AWSSecretAccessKey
+	}
+	if yamlCfg.AWSSessionToken != "" {
+		cfg.AWSSessionToken = yamlCfg.AWSSessionToken
 	}
 	if yamlCfg.AuroraHost != "" {
 		cfg.AuroraHost = yamlCfg.AuroraHost
@@ -377,6 +407,12 @@ func loadFromEnv(cfg *Config) {
 	}
 	if val := os.Getenv("FIS_MIGRATION_AWS_REGION"); val != "" {
 		cfg.AWSRegion = val
+	}
+	if val := os.Getenv("FIS_MIGRATION_AWS_ACCESS_KEY_ID"); val != "" {
+		cfg.AWSAccessKeyID = val
+	}
+	if val := os.Getenv("FIS_MIGRATION_AWS_SECRET_ACCESS_KEY"); val != "" {
+		cfg.AWSSecretAccessKey = val
 	}
 	if val := os.Getenv("FIS_MIGRATION_AURORA_HOST"); val != "" {
 		cfg.AuroraHost = val

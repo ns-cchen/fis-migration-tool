@@ -380,7 +380,7 @@ check_migration_binary() {
             return 1
         fi
         cd "$PROJECT_ROOT"
-        if ! go build -tags dynamic -o "$migration_bin" ./cmd/migration; then
+        if ! go build -o "$migration_bin" ./cmd/migration; then
             print_error "Failed to build migration binary"
             return 1
         fi

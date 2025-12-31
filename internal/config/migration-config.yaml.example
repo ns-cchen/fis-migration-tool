@@ -17,6 +17,14 @@ s3_bucket: my-migration-bucket
 s3_prefix: fis-migration
 aws_region: us-east-1
 
+# AWS Credentials (optional - can use environment variables or AWS CLI instead)
+# These are only needed if you want to specify credentials in the config file
+# Otherwise, use: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN env vars
+# Or configure AWS CLI: aws configure (or aws sso login for SSO)
+aws_access_key_id: ""  # Optional: AWS Access Key ID
+aws_secret_access_key: ""  # Optional: AWS Secret Access Key
+aws_session_token: ""  # Optional: AWS Session Token (only needed for temporary credentials like STS, assume-role, SSO)
+
 # Segmentation & Parallelism
 segments: 16
 max_parallel_segments: 8

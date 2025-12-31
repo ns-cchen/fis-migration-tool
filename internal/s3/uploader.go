@@ -4,15 +4,17 @@ package s3
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/service/s3/s3manager"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/netSkope/fis-migration-tool/internal/config"
 	"github.com/netSkope/fis-migration-tool/internal/util"
 	"go.uber.org/zap"
@@ -29,49 +31,59 @@ const (
 
 // Uploader handles S3 uploads with multipart support.
 type Uploader struct {
-	s3Client   *s3.S3
-	uploader   *s3manager.Uploader
-	config     *config.Config
-	logger     *zap.Logger
+	s3Client *s3.Client
+	uploader *manager.Uploader
+	config   *config.Config
+	logger   *zap.Logger
 }
 
 // NewUploader creates a new S3 uploader.
 func NewUploader(cfg *config.Config, logger *zap.Logger) (*Uploader, error) {
-	// Try to load AWS credentials from Vault (for Kubernetes environments)
-	// This will be a no-op if Vault is not available, and the SDK will fall back
-	// to the default credential chain (~/.aws/credentials, environment variables, etc.)
-	util.LoadAWSCredentialsFromVault()
+	// Load AWS credentials with priority: CLI flags > Env vars > AWS SDK default chain > Vault files
+	// If CLI flags are provided, they are set as environment variables.
+	// Otherwise, the function checks existing environment variables, then falls back to
+	// AWS SDK default chain (SSO, profiles, IAM roles) or vault files.
+	util.LoadAWSCredentials(cfg.AWSAccessKeyID, cfg.AWSSecretAccessKey, cfg.AWSSessionToken)
 
-	// Create AWS session with optional custom endpoint (for LocalStack testing)
-	// The session will use the default credential chain which includes:
-	// 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-	// 2. Shared credentials file (~/.aws/credentials)
-	// 3. IAM role (if running on EC2)
-	// 4. Vault credentials (if LoadAWSCredentialsFromVault set them)
-	awsConfig := &aws.Config{
-		Region: aws.String(cfg.AWSRegion),
+	// Create AWS config with optional custom endpoint (for LocalStack testing)
+	// The config will use the default credential chain which includes:
+	// 1. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) - set by LoadAWSCredentials
+	// 2. Shared credentials file (~/.aws/credentials) - used automatically by SDK if env vars not set
+	// 3. IAM role (if running on EC2) - used automatically by SDK
+	// 4. Vault credentials (if LoadAWSCredentials set them as fallback)
+	ctx := context.Background()
+	awsCfgOptions := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion(cfg.AWSRegion),
 	}
-	
+
 	// Support custom endpoint via environment variable (for LocalStack)
 	if endpoint := os.Getenv("AWS_ENDPOINT_URL"); endpoint != "" {
-		awsConfig.Endpoint = aws.String(endpoint)
-		awsConfig.S3ForcePathStyle = aws.Bool(true) // Required for LocalStack
+		awsCfgOptions = append(awsCfgOptions, awsconfig.WithBaseEndpoint(endpoint))
 		logger.Info("Using custom S3 endpoint", zap.String("endpoint", endpoint))
 	}
 
-	// Use session.NewSessionWithOptions to ensure credential chain is used
-	sess, err := session.NewSessionWithOptions(session.Options{
-		Config:            *awsConfig,
-		SharedConfigState: session.SharedConfigEnable, // Enable ~/.aws/credentials
-	})
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsCfgOptions...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create AWS session: %w", err)
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	s3Client := s3.New(sess)
-	uploader := s3manager.NewUploader(sess, func(u *s3manager.Uploader) {
+	// For LocalStack, we need to configure the S3 client to use path-style addressing
+	if endpoint := os.Getenv("AWS_ENDPOINT_URL"); endpoint != "" {
+		awsCfg.BaseEndpoint = aws.String(endpoint)
+	}
+
+	// Create S3 client with path-style addressing for LocalStack
+	s3Options := []func(*s3.Options){
+		func(o *s3.Options) {
+			if endpoint := os.Getenv("AWS_ENDPOINT_URL"); endpoint != "" {
+				o.UsePathStyle = true // Required for LocalStack
+			}
+		},
+	}
+	s3Client := s3.NewFromConfig(awsCfg, s3Options...)
+	uploader := manager.NewUploader(s3Client, func(u *manager.Uploader) {
 		u.PartSize = 10 * 1024 * 1024 // 10MB per part
-		u.Concurrency = 3             // 3 concurrent uploads
+		u.Concurrency = 3              // 3 concurrent uploads
 	})
 
 	return &Uploader{
@@ -102,9 +114,10 @@ func (u *Uploader) UploadFile(filepath, s3Key string) error {
 		zap.String("s3_key", s3Key),
 		zap.Int64("size", fileSize))
 
-	// Use s3manager.Uploader which handles multipart automatically
+	// Use manager.Uploader which handles multipart automatically
 	// It will use multipart upload for files > 5MB
-	_, err = u.uploader.Upload(&s3manager.UploadInput{
+	ctx := context.Background()
+	_, err = u.uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(u.config.S3Bucket),
 		Key:    aws.String(s3Key),
 		Body:   file,
@@ -149,7 +162,7 @@ func (u *Uploader) UploadFileWithRetry(filepath, s3Key string) error {
 }
 
 // UploadMultipartFile uploads a large file using multipart upload (manual implementation).
-// This is an alternative to s3manager.Uploader for more control.
+// This is an alternative to manager.Uploader for more control.
 func (u *Uploader) UploadMultipartFile(filepath, s3Key string) error {
 	file, err := os.Open(filepath)
 	if err != nil {
@@ -173,13 +186,15 @@ func (u *Uploader) UploadMultipartFile(filepath, s3Key string) error {
 		zap.String("s3_key", s3Key),
 		zap.Int64("size", fileSize))
 
+	ctx := context.Background()
+
 	// Initiate multipart upload
 	createInput := &s3.CreateMultipartUploadInput{
 		Bucket: aws.String(u.config.S3Bucket),
 		Key:    aws.String(s3Key),
 	}
 
-	createOutput, err := u.s3Client.CreateMultipartUpload(createInput)
+	createOutput, err := u.s3Client.CreateMultipartUpload(ctx, createInput)
 	if err != nil {
 		return fmt.Errorf("failed to create multipart upload: %w", err)
 	}
@@ -190,8 +205,8 @@ func (u *Uploader) UploadMultipartFile(filepath, s3Key string) error {
 
 	// Upload parts
 	partSize := int64(10 * 1024 * 1024) // 10MB per part
-	var parts []*s3.CompletedPart
-	partNumber := int64(1)
+	var parts []types.CompletedPart
+	partNumber := int32(1)
 
 	for {
 		partData := make([]byte, partSize)
@@ -200,7 +215,7 @@ func (u *Uploader) UploadMultipartFile(filepath, s3Key string) error {
 			break
 		}
 		if err != nil && err != io.EOF {
-			u.abortMultipartUpload(u.config.S3Bucket, s3Key, uploadID)
+			u.abortMultipartUpload(ctx, u.config.S3Bucket, s3Key, uploadID)
 			return fmt.Errorf("failed to read file part: %w", err)
 		}
 
@@ -212,7 +227,7 @@ func (u *Uploader) UploadMultipartFile(filepath, s3Key string) error {
 		uploadPartInput := &s3.UploadPartInput{
 			Bucket:     aws.String(u.config.S3Bucket),
 			Key:        aws.String(s3Key),
-			PartNumber: aws.Int64(partNumber),
+			PartNumber: aws.Int32(partNumber),
 			UploadId:   uploadID,
 			Body:       bytes.NewReader(partData[:n]),
 		}
@@ -220,13 +235,13 @@ func (u *Uploader) UploadMultipartFile(filepath, s3Key string) error {
 		// Retry logic for part upload
 		var partOutput *s3.UploadPartOutput
 		for attempt := 1; attempt <= maxS3Retries; attempt++ {
-			partOutput, err = u.s3Client.UploadPart(uploadPartInput)
+			partOutput, err = u.s3Client.UploadPart(ctx, uploadPartInput)
 			if err == nil {
 				break
 			}
 			if attempt < maxS3Retries {
 				u.logger.Warn("Part upload failed, retrying",
-					zap.Int64("part", partNumber),
+					zap.Int32("part", partNumber),
 					zap.Int("attempt", attempt),
 					zap.Error(err))
 				time.Sleep(initialRetryDelay * time.Duration(attempt))
@@ -234,17 +249,17 @@ func (u *Uploader) UploadMultipartFile(filepath, s3Key string) error {
 		}
 
 		if err != nil {
-			u.abortMultipartUpload(u.config.S3Bucket, s3Key, uploadID)
+			u.abortMultipartUpload(ctx, u.config.S3Bucket, s3Key, uploadID)
 			return fmt.Errorf("failed to upload part %d: %w", partNumber, err)
 		}
 
-		parts = append(parts, &s3.CompletedPart{
+		parts = append(parts, types.CompletedPart{
 			ETag:       partOutput.ETag,
-			PartNumber: aws.Int64(partNumber),
+			PartNumber: aws.Int32(partNumber),
 		})
 
 		u.logger.Info("Part uploaded",
-			zap.Int64("part", partNumber),
+			zap.Int32("part", partNumber),
 			zap.Int("size", n))
 
 		partNumber++
@@ -255,26 +270,26 @@ func (u *Uploader) UploadMultipartFile(filepath, s3Key string) error {
 		Bucket:   aws.String(u.config.S3Bucket),
 		Key:      aws.String(s3Key),
 		UploadId: uploadID,
-		MultipartUpload: &s3.CompletedMultipartUpload{
+		MultipartUpload: &types.CompletedMultipartUpload{
 			Parts: parts,
 		},
 	}
 
-	_, err = u.s3Client.CompleteMultipartUpload(completeInput)
+	_, err = u.s3Client.CompleteMultipartUpload(ctx, completeInput)
 	if err != nil {
-		u.abortMultipartUpload(u.config.S3Bucket, s3Key, uploadID)
+		u.abortMultipartUpload(ctx, u.config.S3Bucket, s3Key, uploadID)
 		return fmt.Errorf("failed to complete multipart upload: %w", err)
 	}
 
 	u.logger.Info("Multipart upload completed",
 		zap.String("s3_key", s3Key),
-		zap.Int64("parts", partNumber-1))
+		zap.Int32("parts", partNumber-1))
 
 	return nil
 }
 
 // abortMultipartUpload aborts a multipart upload on error.
-func (u *Uploader) abortMultipartUpload(bucket, key string, uploadID *string) {
+func (u *Uploader) abortMultipartUpload(ctx context.Context, bucket, key string, uploadID *string) {
 	if uploadID == nil {
 		return
 	}
@@ -285,7 +300,7 @@ func (u *Uploader) abortMultipartUpload(bucket, key string, uploadID *string) {
 		UploadId: uploadID,
 	}
 
-	if _, err := u.s3Client.AbortMultipartUpload(abortInput); err != nil {
+	if _, err := u.s3Client.AbortMultipartUpload(ctx, abortInput); err != nil {
 		u.logger.Error("Failed to abort multipart upload",
 			zap.String("upload_id", *uploadID),
 			zap.Error(err))
@@ -302,19 +317,21 @@ type MultipartUploadStream struct {
 	bucket     string
 	key        string
 	uploadID   *string
-	parts      []*s3.CompletedPart
-	partNumber int64
+	parts      []types.CompletedPart
+	partNumber int32
 	logger     *zap.Logger
+	ctx        context.Context
 }
 
 // NewMultipartUploadStream initiates a new multipart upload for streaming.
 func (u *Uploader) NewMultipartUploadStream(s3Key string) (*MultipartUploadStream, error) {
+	ctx := context.Background()
 	createInput := &s3.CreateMultipartUploadInput{
 		Bucket: aws.String(u.config.S3Bucket),
 		Key:    aws.String(s3Key),
 	}
 
-	createOutput, err := u.s3Client.CreateMultipartUpload(createInput)
+	createOutput, err := u.s3Client.CreateMultipartUpload(ctx, createInput)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create multipart upload: %w", err)
 	}
@@ -328,9 +345,10 @@ func (u *Uploader) NewMultipartUploadStream(s3Key string) (*MultipartUploadStrea
 		bucket:     u.config.S3Bucket,
 		key:        s3Key,
 		uploadID:   createOutput.UploadId,
-		parts:      []*s3.CompletedPart{},
+		parts:      []types.CompletedPart{},
 		partNumber: 1,
 		logger:     u.logger,
+		ctx:        ctx,
 	}, nil
 }
 
@@ -344,7 +362,7 @@ func (m *MultipartUploadStream) UploadPart(data []byte) error {
 	uploadPartInput := &s3.UploadPartInput{
 		Bucket:     aws.String(m.bucket),
 		Key:        aws.String(m.key),
-		PartNumber: aws.Int64(m.partNumber),
+		PartNumber: aws.Int32(m.partNumber),
 		UploadId:   m.uploadID,
 		Body:       bytes.NewReader(data),
 	}
@@ -353,13 +371,13 @@ func (m *MultipartUploadStream) UploadPart(data []byte) error {
 	var partOutput *s3.UploadPartOutput
 	var err error
 	for attempt := 1; attempt <= maxS3Retries; attempt++ {
-		partOutput, err = m.uploader.s3Client.UploadPart(uploadPartInput)
+		partOutput, err = m.uploader.s3Client.UploadPart(m.ctx, uploadPartInput)
 		if err == nil {
 			break
 		}
 		if attempt < maxS3Retries {
 			m.logger.Warn("Part upload failed, retrying",
-				zap.Int64("part", m.partNumber),
+				zap.Int32("part", m.partNumber),
 				zap.Int("attempt", attempt),
 				zap.Error(err))
 			time.Sleep(initialRetryDelay * time.Duration(attempt))
@@ -367,17 +385,17 @@ func (m *MultipartUploadStream) UploadPart(data []byte) error {
 	}
 
 	if err != nil {
-		m.uploader.abortMultipartUpload(m.bucket, m.key, m.uploadID)
+		m.uploader.abortMultipartUpload(m.ctx, m.bucket, m.key, m.uploadID)
 		return fmt.Errorf("failed to upload part %d: %w", m.partNumber, err)
 	}
 
-	m.parts = append(m.parts, &s3.CompletedPart{
+	m.parts = append(m.parts, types.CompletedPart{
 		ETag:       partOutput.ETag,
-		PartNumber: aws.Int64(m.partNumber),
+		PartNumber: aws.Int32(m.partNumber),
 	})
 
 	m.logger.Info("Uploaded multipart part",
-		zap.Int64("part", m.partNumber),
+		zap.Int32("part", m.partNumber),
 		zap.Int("size", len(data)))
 
 	m.partNumber++
@@ -388,7 +406,7 @@ func (m *MultipartUploadStream) UploadPart(data []byte) error {
 func (m *MultipartUploadStream) Complete() error {
 	if len(m.parts) == 0 {
 		// No parts uploaded, abort the upload
-		m.uploader.abortMultipartUpload(m.bucket, m.key, m.uploadID)
+		m.uploader.abortMultipartUpload(m.ctx, m.bucket, m.key, m.uploadID)
 		return fmt.Errorf("no parts uploaded")
 	}
 
@@ -396,26 +414,25 @@ func (m *MultipartUploadStream) Complete() error {
 		Bucket:   aws.String(m.bucket),
 		Key:      aws.String(m.key),
 		UploadId: m.uploadID,
-		MultipartUpload: &s3.CompletedMultipartUpload{
+		MultipartUpload: &types.CompletedMultipartUpload{
 			Parts: m.parts,
 		},
 	}
 
-	_, err := m.uploader.s3Client.CompleteMultipartUpload(completeInput)
+	_, err := m.uploader.s3Client.CompleteMultipartUpload(m.ctx, completeInput)
 	if err != nil {
-		m.uploader.abortMultipartUpload(m.bucket, m.key, m.uploadID)
+		m.uploader.abortMultipartUpload(m.ctx, m.bucket, m.key, m.uploadID)
 		return fmt.Errorf("failed to complete multipart upload: %w", err)
 	}
 
 	m.logger.Info("Completed multipart upload",
 		zap.String("s3_key", m.key),
-		zap.Int64("parts", m.partNumber-1))
+		zap.Int32("parts", m.partNumber-1))
 
 	return nil
 }
 
 // Abort cancels the multipart upload.
 func (m *MultipartUploadStream) Abort() {
-	m.uploader.abortMultipartUpload(m.bucket, m.key, m.uploadID)
+	m.uploader.abortMultipartUpload(m.ctx, m.bucket, m.key, m.uploadID)
 }
-

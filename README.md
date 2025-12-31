@@ -49,6 +49,17 @@ Database migration tool that exports `fis_aggr` data from MariaDB to CSV files, 
 
 ## Configuration
 
+### Configuration Priority
+
+The tool loads configuration in the following priority order (highest to lowest):
+
+1. **CLI flags** - Highest priority, overrides everything
+2. **Environment variables** - Applied after YAML, before CLI flags
+3. **YAML config file** (`migration-config.yaml`) - Loaded first, can be overridden
+4. **Defaults** - Used if nothing else is set
+
+**Note:** The tool reads `migration-config.yaml` (not `migration-config.yaml.example`). The `.example` file is a template that should be copied to `migration-config.yaml` and customized.
+
 ### CLI Flags
 
 #### Required Flags
@@ -70,6 +81,10 @@ Database migration tool that exports `fis_aggr` data from MariaDB to CSV files, 
 - `-max-parallel-segments <int>`: Max parallel segments (default: 8)
 - `-batch-size <int>`: Batch size for pagination (default: 100000)
 - `-config-file <string>`: Config file path (default: `migration-config.yaml`)
+- `-aws-access-key-id <string>`: AWS Access Key ID (optional, see AWS Credentials section)
+- `-aws-secret-access-key <string>`: AWS Secret Access Key (optional, see AWS Credentials section)
+- `-aws-session-token <string>`: AWS Session Token (optional, only needed for temporary credentials like STS, assume-role, SSO)
+- `-quiet`: Suppress verbose output and instructions (useful when run via script)
 
 #### Aurora MySQL (for SQL execution)
 
@@ -243,14 +258,113 @@ The SQL file has been uploaded to S3. To load data into Aurora MySQL:
 
 When run standalone (without `verify-migration.sh`), the migration tool shows the full output including "Next Steps" section (unless `--quiet` flag is used).
 
+## Building Binaries
+
+The tool supports cross-compilation for multiple platforms. Use the Makefile to build binaries:
+
+### Build for Current Platform
+
+```bash
+make build
+```
+
+This creates `bin/migration` for your current OS and architecture.
+
+### Build for Specific Platform
+
+```bash
+# Linux AMD64 (x86_64)
+make build-linux-amd64
+
+# Linux ARM64
+make build-linux-arm64
+
+# macOS ARM64 (Apple Silicon)
+make build-darwin-arm64
+```
+
+### Build for All Platforms
+
+```bash
+make build-all
+```
+
+This creates binaries in `bin/<os>-<arch>/migration`:
+- `bin/linux-amd64/migration`
+- `bin/linux-arm64/migration`
+- `bin/darwin-arm64/migration`
+
+### Clean Build Artifacts
+
+```bash
+make clean
+```
+
 ## AWS Credentials
 
-The tool uses AWS credentials in the following order:
+The tool supports multiple methods for providing AWS credentials, with the following priority order:
 
-1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
-2. Vault-injected files (`/vault/secrets/awsauroramysqlkey`, `/vault/secrets/awsauroramysqlpass`)
+### Credential Priority Order
 
-For Aurora MySQL password, the tool uses AWS Secrets Manager (via `util.ResolveAWSDBPassword()`).
+1. **CLI flags** (`--aws-access-key-id`, `--aws-secret-access-key`) - **Highest priority**
+2. **Environment variables** (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+3. **AWS CLI credentials** (`~/.aws/credentials` via AWS SDK default chain)
+4. **Vault files** (`/vault/secrets/awsauroramysqlkey`, `/vault/secrets/awsauroramysqlpass`) - **Fallback for backward compatibility**
+
+### Using CLI Flags
+
+```bash
+./migration \
+  -aws-access-key-id AKIAIOSFODNN7EXAMPLE \
+  -aws-secret-access-key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
+  -tenant-id 1234 \
+  -mariadb-host localhost:3306 \
+  -s3-bucket my-bucket \
+  -aws-region us-east-1
+```
+
+### Using Environment Variables
+
+```bash
+export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+export AWS_SESSION_TOKEN=IQoJb3JpZ2luX2VjE...  # Optional: only needed for temporary credentials
+
+./migration \
+  -tenant-id 1234 \
+  -mariadb-host localhost:3306 \
+  -s3-bucket my-bucket \
+  -aws-region us-east-1
+```
+
+### Using AWS CLI Credentials
+
+If you have AWS CLI configured with `aws configure`, the tool will automatically use those credentials:
+
+```bash
+# Configure AWS CLI (if not already done)
+aws configure
+
+# Run migration tool (no credential flags needed)
+./migration \
+  -tenant-id 1234 \
+  -mariadb-host localhost:3306 \
+  -s3-bucket my-bucket \
+  -aws-region us-east-1
+```
+
+The AWS SDK will automatically use credentials from:
+- `~/.aws/credentials` file
+- `~/.aws/config` file
+- IAM role (if running on EC2)
+
+### Using Vault Files (Kubernetes)
+
+For Kubernetes deployments with vault-injected secrets, the tool will automatically use vault files as a fallback:
+
+- `/vault/secrets/awsauroramysqlkey` → `AWS_ACCESS_KEY_ID`
+- `/vault/secrets/awsauroramysqlpass` → `AWS_SECRET_ACCESS_KEY`
+
 
 ## Error Handling
 
@@ -313,9 +427,58 @@ The Aurora MySQL cluster needs one of the following parameters configured:
   -execute-sql
 ```
 
+## Running in Remote Pod
+
+The migration tool can be deployed and run in a Kubernetes pod or remote Linux system (e.g., Ubuntu).
+
+### Prerequisites
+
+1. **Build the binary** for the target platform (Linux AMD64 or ARM64):
+   ```bash
+   make build-linux-amd64  # or build-linux-arm64
+   ```
+
+2. **Deploy the binary** to the remote system:
+   ```bash
+   # Copy binary to remote system
+   scp bin/linux-amd64/migration user@remote-host:/path/to/migration   
+   ```
+
+3. **Configure AWS credentials** using one of the methods described in the "AWS Credentials" section above.
+
+### Example: Running on Remote Linux Server
+
+```bash
+# 1. Build binary
+make build-linux-amd64
+
+# 2. Copy to remote server
+scp bin/linux-amd64/migration user@remote-server:/opt/migration-tool/migration
+
+# 3. SSH into server and run
+ssh user@remote-server
+
+# 4. Set AWS credentials (choose one method)
+export AWS_ACCESS_KEY_ID=<access-key>
+export AWS_SECRET_ACCESS_KEY=<secret-key>
+
+# 5. Run migration
+/opt/migration-tool/migration \
+  -tenant-id 1234 \
+  -mariadb-host <mariadb-host>:3306 \
+  -mariadb-user <user> \
+  -mariadb-password <password> \
+  -s3-bucket <bucket> \
+  -aws-region <region> \
+  -segments 16 \
+  -max-parallel-segments 8
+```
+
 ## End-to-End Migration Testing
 
 The `verify-migration.sh` script provides a complete end-to-end migration test that:
+
+**Note:** `verify-migration.sh` is only for local verification. For production deployments, use the migration binary directly in your pod or remote server.
 
 1. Uses existing data from MariaDB
 2. Dumps CSV files from MariaDB
@@ -447,367 +610,3 @@ The `verify-migration.sh` script provides a complete end-to-end migration test t
 - `--skip-tunnel-setup`: Skip tunnel setup if tunnels are already running
 - `--mp-port <port>`: Override MariaDB local port (default: 3307)
 - `--aws-port <port>`: Override AWS local port (default: 3308)
-
-## Local Execution with SSH Tunnels
-
-The migration tool can be run locally using SSH tunnels to connect to qa01 MariaDB and AWS MySQL, without deploying to Kubernetes.
-
-### Prerequisites
-
-- `tsh` (Teleport SSH client) installed and configured
-- Access to qa01 and AWS clusters via Teleport (`tsh login`)
-- AWS credentials configured (for S3 and Secrets Manager)
-- **MariaDB password** (required via `--mp-password` flag for both NPE and PE)
-- **AWS Aurora MySQL password** (optional, only needed for SQL execution verification via `--aws-password` flag)
-
-### Production Environment (PE) Testing
-
-For **Production Environment (PE)**, the tool can be run locally since PE K8s pods don't have AWS secrets mounted. The manager will execute SQL on EC2 after CSV files are uploaded.
-
-**PE Testing:**
-
-- Uses SSH tunnels to connect to PE MariaDB (same as NPE)
-- Provide MariaDB password via `--mp-password` flag (required for both NPE and PE)
-- **Always specify `--tenant-id`** (no auto-detection in production)
-- Override S3 bucket and region via `--s3-bucket` and `--aws-region` flags
-- **Skips SQL execution** if `--execute-sql` flag is not set (manager executes on EC2)
-- Provides clear instructions for manager on what SQL to execute
-
-**Important:**
-
-- Before manager executes SQL on EC2, ensure Aurora MySQL has IAM role configured for S3 access (see "Aurora MySQL IAM Role Configuration" section below)
-- When manager runs SQL on EC2, the SQL executes on Aurora MySQL, which needs the IAM role configured (not the EC2 instance)
-- Manager will encounter Error 63985 if Aurora doesn't have the IAM role configured
-
-### Usage
-
-Run the verification script with `--use-tunnels` flag:
-
-```bash
-# Example: Run verification with SSH tunnels (NPE/qa01) - Auto-detect tenant
-# What it does: Auto-detects tenant, exports data, uploads to S3, executes SQL on Aurora
-./verify-migration.sh --use-tunnels qa01 \
-  --mp-password <npe-mariadb-password> \
-  --aws-mysql-user fis \
-  --aws-mysql-secret rds!cluster-xxx \
-  --aws-mysql-region us-east-1
-# Flags:
-#   --use-tunnels qa01: Auto-configures qa01 tunnel settings (jump/target/S3/region)
-#   --mp-password: MariaDB password (required)
-#   --execute-sql: Enable SQL execution verification locally
-#   --aws-mysql-*: Required when --execute-sql is set
-# Note: Tenant ID auto-detected if no --tenant-id specified
-
-# Example: Run verification for PE (fr4) - Export only, no SQL execution
-# What it does: Exports tenant data, uploads to PE S3, generates SQL file, skips SQL execution
-./verify-migration.sh --use-tunnels fr4 \
-  --mp-password <pe-mariadb-password> \
-  --tenant-id <tenant-id>
-# Flags:
-#   --use-tunnels fr4: Auto-configures fr4 tunnel settings (jump/target/S3/region)
-#   --mp-password: MariaDB password (required)
-#   --tenant-id: Tenant ID (required for PE)
-# Note: No --execute-sql flag = SQL execution skipped, manager executes on EC2
-```
-
-```
-
-### Tunnel Configuration
-
-The script uses the following default tunnel configuration:
-
-- **MP MariaDB (qa01/NPE)**:
-  - Jump host: `mariafis01-1.qa01-mp-npe.nc1.iad0.nsscloud.net`
-  - Target: `mariafishavip.qa01-mp-npe.nc1.iad0.nsscloud.net`
-  - Local port: `3307`
-  - Cluster: `iad0`
-
-- **MP MariaDB (fr4/PE)**:
-  - Jump host: `mariafis01-1.my1.fr4.nskope.net`
-  - Target: `mariafis01-1.my1.fr4.nskope.net`
-  - Local port: `3307` (same as NPE, can be overridden with `--mp-port`)
-  - Cluster: `fr4`
-
-- **AWS Aurora MySQL (qa01/NPE)**:
-  - Jump host: `ns-nonprod-eng-data-ls-container-mariadb-use1-dev.npe.235494792415.us-east-1c.aws.nskope.net`
-  - Target: `ns-nonprod-fis-cluster-dev-use1.cluster-cedske4o4zsx.us-east-1.rds.amazonaws.com`
-  - Local port: `3308`
-  - Cluster: `aws-nonprod`
-  - Secret: `rds!cluster-d256b298-d749-488a-8e55-34018d6047dc`
-  - Region: `us-east-1`
-
-- **AWS Aurora MySQL (fr4/PE)**:
-  - Target: `ns-prod-fis-cluster-euc1.proxy-crk82gmwwc03.eu-central-1.rds.amazonaws.com` (RDS Proxy endpoint)
-  - Local port: `3308` (same as NPE, can be overridden with `--aws-port`)
-  - Secret: `rds!cluster-dc527dd1-6e19-4aa4-a14f-c370fab851f1-ODQqsh`
-  - Region: `eu-central-1`
-  - Note: Tunnel configuration for fr4 Aurora MySQL is set up automatically when `--execute-sql` is used
-
-**Simplified Usage:**
-- `--use-tunnels qa01`: Use qa01 (NPE) environment - auto-configures all tunnel settings
-- `--use-tunnels fr4`: Use fr4 (PE) environment - auto-configures all tunnel settings
-- `--mp-password <password>`: **Required** - MariaDB password (for both NPE and PE)
-- `--execute-sql`: Enable SQL execution verification locally (default: false)
-- `--aws-password <password>`: Optional - AWS Aurora MySQL password (only needed for SQL execution verification)
-- `--tenant-id <id>`: Tenant ID to export (required for PE, optional for NPE with auto-detection)
-
-### Environment Variables
-
-- `FIS_AWS_MYSQL_USER`: AWS Aurora MySQL username (if not provided via CLI)
-- `FIS_AWS_MYSQL_SECRET`: AWS Secrets Manager secret name (if not provided via CLI)
-- `FIS_AWS_MYSQL_REGION`: AWS region for Secrets Manager (if not provided via CLI)
-- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`: For S3 access
-
-### Tunnel Management
-
-- Script automatically creates tunnels if `--use-tunnels` is set
-- Use `--skip-tunnel-setup` if tunnels are already running (script will verify they work)
-- Script cleans up tunnels on exit
-
-
-### Example: Full Local Execution
-
-**NPE (Non-Production):**
-```bash
-# 1. Ensure you're logged into Teleport
-tsh login
-
-# 2. Run verification with tunnels (qa01/NPE)
-./verify-migration.sh --use-tunnels qa01 \
-  --mp-password <npe-mariadb-password> \
-  --execute-sql \
-  --aws-mysql-user fis \
-  --aws-mysql-secret rds!cluster-xxx \
-  --aws-mysql-region us-east-1 \
-  --aws-password <aws-mysql-password>
-
-# 3. Or skip tunnel setup if tunnels already exist
-./verify-migration.sh --use-tunnels qa01 --skip-tunnel-setup \
-  --mp-password <npe-mariadb-password> \
-  --execute-sql \
-  --aws-mysql-user fis \
-  --aws-mysql-secret rds!cluster-xxx \
-  --aws-mysql-region us-east-1 \
-  --aws-password <aws-mysql-password>
-```
-
-**PE (Production - fr4):**
-
-```bash
-# 1. Ensure you're logged into Teleport
-tsh login
-
-# 2. Run verification for PE (fr4) - export only, manager executes SQL on EC2
-./verify-migration.sh --use-tunnels fr4 \
-  --mp-password <pe-mariadb-password> \
-  --tenant-id <tenant-id>
-# Flags:
-#   --use-tunnels fr4: Auto-configures fr4 tunnel settings (jump/target/S3/region)
-#   --mp-password: PE MariaDB password (required)
-#   --tenant-id: Tenant ID (required for PE)
-# Note: No --execute-sql flag = SQL execution skipped, manager executes on EC2
-
-# 3. Or with SQL execution (if AWS MySQL connection info provided)
-./verify-migration.sh --use-tunnels fr4 \
-  --mp-password <pe-mariadb-password> \
-  --tenant-id <tenant-id> \
-  --execute-sql \
-  --aws-mysql-user fis \
-  --aws-mysql-secret rds!cluster-dc527dd1-6e19-4aa4-a14f-c370fab851f1-ODQqsh \
-  --aws-mysql-region eu-central-1 \
-  --aws-password <aws-mysql-password>
-```
-
-## Running Migration Tests
-
-The migration tool can be run in two ways: **locally** (using SSH tunnels) or **in a Kubernetes pod**.
-
-### Local Testing
-
-Local testing uses SSH tunnels to connect to real databases without deploying to Kubernetes.
-
-#### Prerequisites
-
-- Install `tsh`
-- Install AWS CLI
-- Set up aws configure sso
-- Migration binary built:
-
-  ```bash
-  go build -o cmd/migration/migration ./cmd/migration
-  ```
-
-#### Quick Start
-
-**1. Ensure you're logged into Teleport:**
-
-```bash
-tsh login
-```
-
-**2. Ensure you're logged into AWS:**
-
-```bash
-aws sso login
-```
-
-**NPE (Non-Production Environment) Examples:**
-
-**Example 0: Use existing data (auto-detect tenant) - Export only**
-
-```bash
-# What it does:
-#   - Creates SSH tunnel to NPE MariaDB (qa01)
-#   - Auto-detects a tenant with existing data in MariaDB
-#   - Exports tenant data from MariaDB → CSV files → S3
-#   - Generates SQL file → S3
-#   - Skips SQL execution (manager can execute SQL manually later)
-./verify-migration.sh --use-tunnels qa01 \
-  --mp-password <npe-mariadb-password>
-# Flags:
-#   --use-tunnels qa01: Use SSH tunnels for qa01 (NPE) environment (auto-configures jump/target/S3/region)
-#   --mp-password: MariaDB password (required)
-# Note: No --tenant-id = auto-detects tenant with data
-# Note: No --execute-sql flag = SQL execution skipped
-```
-
-**Example 1: Dump specific tenant to S3 (export only, no SQL execution)**
-
-```bash
-# What it does:
-#   - Creates SSH tunnel to NPE MariaDB (qa01)
-#   - Exports tenant 1016 data from MariaDB → CSV files → S3
-#   - Generates SQL file → S3
-#   - Skips SQL execution (manager can execute SQL manually later)
-./verify-migration.sh --use-tunnels qa01 \
-  --mp-password <npe-mariadb-password> \
-  --tenant-id 1016
-# Flags:
-#   --use-tunnels qa01: Use SSH tunnels for qa01 (NPE) environment (auto-configures jump/target/S3/region)
-#   --mp-password: MariaDB password (required)
-#   --tenant-id: Tenant ID to export (required)
-# Note: No --aws-mysql-* flags = SQL execution skipped
-```
-
-**Example 2: Dump specific tenant to S3 and execute SQL automatically**
-
-```bash
-# What it does:
-#   - Creates SSH tunnels to NPE MariaDB and AWS Aurora (qa01)
-#   - Exports tenant 1016 data from MariaDB → CSV files → S3
-#   - Generates SQL file → S3
-#   - Executes SQL on Aurora MySQL to load data automatically
-#   - Verifies data in Aurora MySQL
-./verify-migration.sh --use-tunnels qa01 \
-  --mp-password <npe-mariadb-password> \
-  --tenant-id 1016 \
-  --execute-sql \
-  --aws-mysql-user fis \
-  --aws-mysql-secret rds!cluster-d256b298-d749-488a-8e55-34018d6047dc \
-  --aws-mysql-region us-east-1 \
-  --aws-password <aws-mysql-password>
-# Flags:
-#   --use-tunnels qa01: Auto-configures qa01 tunnel settings
-#   --execute-sql: Enable SQL execution verification locally
-#   --aws-mysql-user, --aws-mysql-secret, --aws-mysql-region: Required when --execute-sql is set
-#   --aws-password: Optional, for SQL execution verification
-#   --aws-database: Optional (defaults to fis_qa01)
-```
-
-**Example 3: Dump specific tenant with custom segments and parallelism**
-
-```bash
-# What it does:
-#   - Same as Example 1, but with custom hash segmentation
-#   - Uses 32 segments (instead of default 16) for finer-grained parallel processing
-#   - Uses 16 parallel workers (instead of default 8) for faster export
-./verify-migration.sh --use-tunnels qa01 \
-  --mp-password <npe-mariadb-password> \
-  --tenant-id 1016 \
-  --segments 32 \
-  --max-parallel-segments 16
-# Flags:
-#   --segments: Number of hash segments (default: 16)
-#   --max-parallel-segments: Maximum parallel workers (default: 8)
-# Note: More segments = finer-grained parallel processing, more workers = faster export
-```
-
-**PE (Production Environment - fr4) Examples:**
-
-**Example 0: Use existing data (auto-detect tenant) - Export only**
-
-```bash
-# What it does:
-#   - Creates SSH tunnel to PE MariaDB (fr4)
-#   - Auto-detects a tenant with existing data in MariaDB
-#   - Exports tenant data from PE MariaDB → CSV files → PE S3 bucket
-#   - Generates SQL file → PE S3 bucket
-#   - Skips SQL execution (manager will execute SQL on EC2)
-./verify-migration.sh --use-tunnels fr4 \
-  --mp-password <pe-mariadb-password>
-# Flags:
-#   --use-tunnels fr4: Use SSH tunnels for fr4 (PE) environment (auto-configures jump/target/S3/region)
-#   --mp-password: MariaDB password (required)
-# Note: No --tenant-id = auto-detects tenant with data (works in PE too)
-# Note: No --execute-sql flag = SQL execution skipped, manager executes on EC2
-```
-
-**Example 1: Dump specific tenant to S3 (export only, manager executes SQL on EC2)**
-
-```bash
-# What it does:
-#   - Creates SSH tunnel to PE MariaDB (fr4)
-#   - Exports tenant data from PE MariaDB → CSV files → PE S3 bucket
-#   - Generates SQL file → PE S3 bucket
-#   - Skips SQL execution (manager will execute SQL on EC2)
-./verify-migration.sh --use-tunnels fr4 \
-  --mp-password <pe-mariadb-password> \
-  --tenant-id <tenant-id>
-# Flags:
-#   --use-tunnels fr4: Use SSH tunnels for fr4 (PE) environment (auto-configures jump/target/S3/region)
-#   --mp-password: MariaDB password (required)
-#   --tenant-id: Tenant ID (required for PE, no auto-detection)
-# Note: No --aws-mysql-* flags = SQL execution skipped, manager executes on EC2
-# Note: fr4 auto-configures:
-#   - Jump: mariafis01-1.my1.fr4.nskope.net
-#   - Target: mariafishavip.qa01-mp-npe.nc1.iad0.nsscloud.net
-#   - S3 bucket: backup-bucket-maria-1
-#   - Region: eu-central-1
-```
-
-**Example 2: Dump specific tenant to S3 and execute SQL automatically**
-
-```bash
-# What it does:
-#   - Same as Example 1, but also executes SQL on Aurora MySQL automatically
-#   - Creates SSH tunnel to PE Aurora MySQL (if needed)
-#   - Executes LOAD DATA FROM S3 on Aurora MySQL
-./verify-migration.sh --use-tunnels fr4 \
-  --mp-password <pe-mariadb-password> \
-  --tenant-id <tenant-id> \
-  --aws-mysql-user fis \
-  --aws-mysql-secret rds!cluster-dc527dd1-6e19-4aa4-a14f-c370fab851f1-ODQqsh \
-  --aws-mysql-region eu-central-1
-# Flags:
-#   --use-tunnels fr4: Auto-configures fr4 tunnel settings
-#   --aws-mysql-*: Required for SQL execution
-#   --aws-database: Optional (defaults to fis)
-```
-
-**Example 3: Dump specific tenant with custom segments and parallelism**
-
-```bash
-# What it does:
-#   - Same as Example 1, but with custom hash segmentation
-#   - Uses 32 segments (instead of default 16) for finer-grained parallel processing
-#   - Uses 16 parallel workers (instead of default 8) for faster export
-./verify-migration.sh --use-tunnels fr4 \
-  --mp-password <pe-mariadb-password> \
-  --tenant-id <tenant-id> \
-  --segments 32 \
-  --max-parallel-segments 16
-# Flags:
-#   --segments: Number of hash segments (default: 16)
-#   --max-parallel-segments: Maximum parallel workers (default: 8)
-# Note: More segments = finer-grained parallel processing, more workers = faster export
-```
