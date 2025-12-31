@@ -77,9 +77,6 @@ SKIP_TUNNEL_SETUP=false
 CLEANUP_ONLY=false
 AWS_DATABASE_NAME="fis_qa01"  # Default AWS database name from config
 
-# Data generation flags
-USE_EXISTING_DATA=false
-
 # Tunnel PIDs for cleanup
 MP_TUNNEL_PID=""
 AWS_TUNNEL_PID=""
@@ -221,10 +218,6 @@ parse_args() {
             --aws-database)
                 AWS_DATABASE_NAME="$2"
                 shift 2
-                ;;
-            --use-existing-data)
-                USE_EXISTING_DATA=true
-                shift
                 ;;
             --tenant-id)
                 TEST_TENANT_ID="$2"
@@ -1066,51 +1059,31 @@ main() {
     # Setup tunnels
     setup_tunnels || exit 1
     
-    # Determine data generation method
-    if [ "$USE_EXISTING_DATA" = true ]; then
-            # Use existing tenant data
-            print_info "Using existing tenant data"
-            if [ -z "$TEST_TENANT_ID" ] || [ "$TEST_TENANT_ID" = "999999" ]; then
-                # Auto-detect tenant (stderr goes to terminal, stdout captured)
-                local detected_tenant
-                detected_tenant=$(find_tenant_with_data)
-                local find_result=$?
-                if [ $find_result -ne 0 ] || [ -z "$detected_tenant" ] || [ "$detected_tenant" = "" ]; then
-                    print_error "Failed to find tenant with existing data"
-                    exit 1
-                fi
-                # Ensure we have a valid numeric tenant ID
-                if ! [[ "$detected_tenant" =~ ^[0-9]+$ ]]; then
-                    print_error "Invalid tenant ID detected: '${detected_tenant}'"
-                    exit 1
-                fi
-                TEST_TENANT_ID="$detected_tenant"
-                print_info "Using auto-detected tenant ID: ${TEST_TENANT_ID}"
-            fi
-            verify_tenant_has_data ${TEST_TENANT_ID} || exit 1
-        else
-            # Check if tenant already has data - if so, use it automatically
-            if [ -n "$TEST_TENANT_ID" ] && [ "$TEST_TENANT_ID" != "999999" ]; then
-                # User specified a tenant ID - check if it has data
-                if verify_tenant_has_data ${TEST_TENANT_ID} 2>/dev/null; then
-                    print_info "Tenant ${TEST_TENANT_ID} already has data - using existing data"
-                    USE_EXISTING_DATA=true  # Set flag to use existing data
-                else
-                    # Tenant has no data - require explicit flag
-                    print_error "Tenant ${TEST_TENANT_ID} has no data."
-                    print_error "Please use --use-existing-data with a tenant that has data"
-                    exit 1
-                fi
-            else
-                # No tenant ID specified - require explicit flag
-                print_error "No tenant ID specified and no data generation method selected."
-                print_error "Please use --use-existing-data (auto-detects tenant with data)"
-                exit 1
-            fi
+    # Determine tenant ID - always use existing data
+    if [ -z "$TEST_TENANT_ID" ] || [ "$TEST_TENANT_ID" = "999999" ]; then
+        # Auto-detect tenant (stderr goes to terminal, stdout captured)
+        print_info "Auto-detecting tenant with existing data..."
+        local detected_tenant
+        detected_tenant=$(find_tenant_with_data)
+        local find_result=$?
+        if [ $find_result -ne 0 ] || [ -z "$detected_tenant" ] || [ "$detected_tenant" = "" ]; then
+            print_error "Failed to find tenant with existing data"
+            exit 1
         fi
+        # Ensure we have a valid numeric tenant ID
+        if ! [[ "$detected_tenant" =~ ^[0-9]+$ ]]; then
+            print_error "Invalid tenant ID detected: '${detected_tenant}'"
+            exit 1
+        fi
+        TEST_TENANT_ID="$detected_tenant"
+        print_info "Using auto-detected tenant ID: ${TEST_TENANT_ID}"
+    else
+        # User specified a tenant ID - verify it has data
+        print_info "Using specified tenant ID: ${TEST_TENANT_ID}"
+    fi
     
-    # Skip test data generation - we only support --use-existing-data now
-    # (benchmark/direct INSERT and Kafka features were removed)
+    # Verify tenant has data
+    verify_tenant_has_data ${TEST_TENANT_ID} || exit 1
     
     # Run migration
     run_migration || exit 1
@@ -1141,13 +1114,8 @@ main() {
         fi
     fi
     
-    # Cleanup test data from qa01 MariaDB (skip if using existing data)
-    if [ "$USE_EXISTING_DATA" != true ]; then
-        print_info "Cleaning up test data from qa01 MariaDB..."
-        cleanup_test_data || print_warn "Cleanup failed, but migration completed successfully"
-    else
-        print_info "Skipping cleanup (using existing data)"
-    fi
+    # Skip cleanup - we always use existing data
+    print_info "Skipping cleanup (using existing data)"
     
     print_info "=== All verification checks passed ==="
 }
