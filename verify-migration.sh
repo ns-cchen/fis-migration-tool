@@ -20,7 +20,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
 
 # Configuration
-COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 SCHEMA_FILE="$PROJECT_ROOT/internal/store/schema_mysql.sql"
 MARIADB_PORT=5590
 LOCALSTACK_PORT=4566
@@ -28,7 +27,6 @@ LOCALSTACK_PORT=4566
 # Test configuration
 TEST_TENANT_ID=999999
 TEST_TABLE_NAME="fis_aggr"
-TEST_BENCHMARK_ROWS=10000
 TEST_S3_BUCKET="test-migration-bucket"  # Default for LocalStack
 REAL_S3_BUCKET="fis-mariadb-backups-use1-dev"  # Real S3 bucket for qa01
 TEST_AWS_REGION="us-east-1"
@@ -84,7 +82,6 @@ AWS_MYSQL_REGION="${FIS_AWS_MYSQL_REGION:-}"
 KEEP_CONTAINERS=false
 USE_TUNNELS=false
 SKIP_TUNNEL_SETUP=false
-SKIP_BENCHMARK=false
 CLEANUP_ONLY=false
 AWS_DATABASE_NAME="fis_qa01"  # Default AWS database name from config
 
@@ -263,10 +260,6 @@ parse_args() {
             --aws-port)
                 AWS_LOCAL_PORT="$2"
                 shift 2
-                ;;
-            --skip-benchmark)
-                SKIP_BENCHMARK=true
-                shift
                 ;;
             --cleanup-only)
                 CLEANUP_ONLY=true
@@ -717,65 +710,10 @@ run_migration() {
 verify_csv_files() {
     print_info "Verifying CSV files..."
     
-    local csv_count=0
-    
-    # Find CSV files in temp directory
-    # Pattern: tenant-{ID}.{table}.hash-{start}-{end}.part-{seq}.csv
-    # Use a more robust approach: check /tmp first, then TMPDIR
-    local search_dirs=("/tmp")
-    if [ -n "${TMPDIR:-}" ] && [ "${TMPDIR}" != "/tmp" ] && [ -d "${TMPDIR}" ]; then
-        search_dirs+=("${TMPDIR}")
-    fi
-    
-    # Track processed files to avoid duplicates
-    local processed_files=()
-    
-    for search_dir in "${search_dirs[@]}"; do
-        # Use shell glob pattern for reliable matching
-        local pattern="tenant-${TEST_TENANT_ID}.${TEST_TABLE_NAME}.*.csv"
-        for csv_file in "$search_dir"/$pattern; do
-            # Check if file exists (glob expansion returns pattern if no match)
-            if [ -f "$csv_file" ] && [[ "$csv_file" != "$search_dir/$pattern" ]]; then
-                # Check if we've already processed this file (avoid duplicates)
-                local already_processed=false
-                for processed in "${processed_files[@]}"; do
-                    if [ "$processed" = "$csv_file" ]; then
-                        already_processed=true
-                        break
-                    fi
-                done
-                
-                if [ "$already_processed" = false ]; then
-                    processed_files+=("$csv_file")
-                    csv_count=$((csv_count + 1))
-                    print_info "Found CSV file: $(basename "$csv_file")"
-                    
-                    # Verify CSV format (has header, has data)
-                    local line_count=$(wc -l < "$csv_file" 2>/dev/null | tr -d ' ')
-                    if [ "$line_count" -lt 2 ]; then
-                        print_warn "CSV file has insufficient lines: $csv_file (may be empty if no data exported)"
-                    else
-                        print_info "  CSV file has ${line_count} lines"
-                    fi
-                    
-                    # Check header
-                    local header=$(head -1 "$csv_file" 2>/dev/null)
-                    if [[ "$header" != *"tenantid"* ]] || [[ "$header" != *"hash"* ]]; then
-                        print_warn "CSV file has unexpected header: $csv_file"
-                    fi
-                fi
-            fi
-        done
-    done
-    
-    if [ $csv_count -eq 0 ]; then
-        print_warn "No CSV files found in /tmp or ${TMPDIR:-/tmp}"
-        print_warn "This is expected if migration found 0 rows to export"
-        # Don't fail - this is expected if records aren't visible yet
-        return 0
-    fi
-    
-    print_info "Verified $csv_count CSV file(s)"
+    # Note: CSV files are streamed directly to S3, not stored locally
+    # This function is kept for backward compatibility but doesn't check local files
+    # CSV files are verified via verify_s3_uploads() instead
+    print_info "CSV files are streamed directly to S3 (verified via S3 upload check)"
     return 0
 }
 
@@ -968,20 +906,13 @@ verify_aurora_load() {
     # Determine S3 bucket based on mode
     local s3_bucket
     if [ "$USE_TUNNELS" = true ]; then
-        s3_bucket=${REAL_S3_BUCKET}
+        s3_bucket=${S3_BUCKET}
     else
         s3_bucket=${TEST_S3_BUCKET}
     fi
     
-    local sql_file=$(find_sql_file ${TEST_TENANT_ID})
-    
-    # If SQL file exists and has content, we can skip re-exporting
-    if [ -n "$sql_file" ] && [ -s "$sql_file" ] && grep -q "LOAD DATA FROM S3" "$sql_file"; then
-        print_info "Found existing SQL file with LOAD DATA statements: $sql_file"
-        print_info "Re-running migration with -execute-sql to load data into Aurora MySQL..."
-    else
-        print_info "SQL file not found or empty, running full migration with -execute-sql..."
-    fi
+    # SQL file is in S3, not local - migration tool will generate and upload it
+    print_info "Running migration with -execute-sql to load data into Aurora MySQL..."
     
     # Run migration with execute-sql flag and capture output
     local migration_output=$(mktemp)
