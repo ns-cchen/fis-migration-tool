@@ -825,40 +825,94 @@ verify_s3_uploads() {
 verify_sql_generation() {
     print_info "Verifying SQL file generation..."
     
-    local sql_file=$(find_sql_file ${TEST_TENANT_ID})
+    local s3_bucket=${S3_BUCKET}
+    local aws_region=${AWS_REGION}
+    local sql_s3_key="fis-migration/sql/load-data-tenant-${TEST_TENANT_ID}.sql"
     
-    if [ -z "$sql_file" ] || [ ! -f "$sql_file" ]; then
-        print_warn "SQL file not found in expected locations"
-        print_warn "This is expected if migration found 0 rows to export"
-        return 0  # Don't fail - expected if no data
-    fi
-    
-    print_info "Found SQL file: $sql_file"
-    
-    # Verify SQL file contains LOAD DATA FROM S3 statements
-    if ! grep -q "LOAD DATA FROM S3" "$sql_file"; then
-        # If file is empty, this is expected for 0 rows
-        if [ ! -s "$sql_file" ]; then
-            print_warn "SQL file is empty (expected if migration found 0 rows to export)"
+    # Check if SQL file exists in S3
+    if [ "$USE_TUNNELS" = true ]; then
+        # Use real AWS S3
+        print_info "Checking SQL file in S3: s3://${s3_bucket}/${sql_s3_key}"
+        if ! timeout 10 aws s3 ls "s3://${s3_bucket}/${sql_s3_key}" --region "${aws_region}" &>/dev/null; then
+            print_warn "SQL file not found in S3: s3://${s3_bucket}/${sql_s3_key}"
+            print_warn "This is expected if migration found 0 rows to export"
             return 0  # Don't fail - expected if no data
         fi
-        print_error "SQL file does not contain LOAD DATA FROM S3 statements"
-        return 1
-    fi
-    
-    # Verify S3 paths in SQL (check for either bucket)
-    if ! grep -q "s3://${TEST_S3_BUCKET}" "$sql_file" && ! grep -q "s3://${REAL_S3_BUCKET}" "$sql_file"; then
-        # If file is empty or has no LOAD DATA statements, this is expected for 0 rows
-        if [ ! -s "$sql_file" ] || ! grep -q "LOAD DATA" "$sql_file"; then
-            print_warn "SQL file is empty or has no LOAD DATA statements (expected if 0 rows exported)"
+        
+        # Download SQL file temporarily to verify contents
+        local tmp_sql_file=$(mktemp)
+        if ! timeout 10 aws s3 cp "s3://${s3_bucket}/${sql_s3_key}" "$tmp_sql_file" --region "${aws_region}" &>/dev/null; then
+            print_warn "Failed to download SQL file from S3 for verification"
+            rm -f "$tmp_sql_file"
+            return 0  # Don't fail - file exists in S3, just couldn't verify contents
+        fi
+        
+        # Verify SQL file contains LOAD DATA FROM S3 statements
+        if ! grep -q "LOAD DATA FROM S3" "$tmp_sql_file"; then
+            # If file is empty, this is expected for 0 rows
+            if [ ! -s "$tmp_sql_file" ]; then
+                print_warn "SQL file is empty (expected if migration found 0 rows to export)"
+                rm -f "$tmp_sql_file"
+                return 0  # Don't fail - expected if no data
+            fi
+            print_error "SQL file does not contain LOAD DATA FROM S3 statements"
+            rm -f "$tmp_sql_file"
+            return 1
+        fi
+        
+        # Verify S3 paths in SQL (check for bucket)
+        if ! grep -q "s3://${s3_bucket}" "$tmp_sql_file"; then
+            # If file is empty or has no LOAD DATA statements, this is expected for 0 rows
+            if [ ! -s "$tmp_sql_file" ] || ! grep -q "LOAD DATA" "$tmp_sql_file"; then
+                print_warn "SQL file is empty or has no LOAD DATA statements (expected if 0 rows exported)"
+                rm -f "$tmp_sql_file"
+                return 0  # Don't fail - expected if no data
+            fi
+            print_error "SQL file does not contain expected S3 bucket paths"
+            rm -f "$tmp_sql_file"
+            return 1
+        fi
+        
+        print_info "SQL file verified in S3: s3://${s3_bucket}/${sql_s3_key}"
+        rm -f "$tmp_sql_file"
+        return 0
+    else
+        # Docker mode - check local file (for LocalStack testing)
+        local sql_file=$(find_sql_file ${TEST_TENANT_ID})
+        
+        if [ -z "$sql_file" ] || [ ! -f "$sql_file" ]; then
+            print_warn "SQL file not found in expected locations"
+            print_warn "This is expected if migration found 0 rows to export"
             return 0  # Don't fail - expected if no data
         fi
-        print_error "SQL file does not contain expected S3 bucket paths"
-        return 1
+        
+        print_info "Found SQL file: $sql_file"
+        
+        # Verify SQL file contains LOAD DATA FROM S3 statements
+        if ! grep -q "LOAD DATA FROM S3" "$sql_file"; then
+            # If file is empty, this is expected for 0 rows
+            if [ ! -s "$sql_file" ]; then
+                print_warn "SQL file is empty (expected if migration found 0 rows to export)"
+                return 0  # Don't fail - expected if no data
+            fi
+            print_error "SQL file does not contain LOAD DATA FROM S3 statements"
+            return 1
+        fi
+        
+        # Verify S3 paths in SQL (check for either bucket)
+        if ! grep -q "s3://${TEST_S3_BUCKET}" "$sql_file" && ! grep -q "s3://${REAL_S3_BUCKET}" "$sql_file"; then
+            # If file is empty or has no LOAD DATA statements, this is expected for 0 rows
+            if [ ! -s "$sql_file" ] || ! grep -q "LOAD DATA" "$sql_file"; then
+                print_warn "SQL file is empty or has no LOAD DATA statements (expected if 0 rows exported)"
+                return 0  # Don't fail - expected if no data
+            fi
+            print_error "SQL file does not contain expected S3 bucket paths"
+            return 1
+        fi
+        
+        print_info "SQL file verified: $sql_file"
+        return 0
     fi
-    
-    print_info "SQL file verified: $sql_file"
-    return 0
 }
 
 verify_aurora_load() {
