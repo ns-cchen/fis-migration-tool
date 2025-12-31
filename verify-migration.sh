@@ -20,12 +20,12 @@ PROJECT_ROOT="$SCRIPT_DIR"
 # Configuration
 SCHEMA_FILE="$PROJECT_ROOT/internal/store/schema_mysql.sql"
 
-# Test configuration
-TEST_TENANT_ID=999999
-TEST_TABLE_NAME="fis_aggr"
-TEST_AWS_REGION="us-east-1"
-TEST_SEGMENTS=16
-TEST_MAX_PARALLEL=8
+# Configuration
+TENANT_ID=999999  # Default: auto-detect tenant with data
+TABLE_NAME="fis_aggr"
+AWS_REGION_DEFAULT="us-east-1"
+SEGMENTS=16
+MAX_PARALLEL=8
 
 # SSH Tunnel configuration (for --use-tunnels mode)
 # Default environment is qa01 (NPE)
@@ -220,15 +220,15 @@ parse_args() {
                 shift 2
                 ;;
             --tenant-id)
-                TEST_TENANT_ID="$2"
+                TENANT_ID="$2"
                 shift 2
                 ;;
             --segments)
-                TEST_SEGMENTS="$2"
+                SEGMENTS="$2"
                 shift 2
                 ;;
             --max-parallel-segments)
-                TEST_MAX_PARALLEL="$2"
+                MAX_PARALLEL="$2"
                 shift 2
                 ;;
             *)
@@ -508,7 +508,7 @@ verify_tenant_has_data() {
 cleanup_test_data() {
     print_info "Cleaning up test records from qa01 MariaDB (via tunnel)..."
     
-    local tenant_id=${TEST_TENANT_ID}
+    local tenant_id=${TENANT_ID}
     local db_name="fis"
     local mp_host="127.0.0.1"
     local mp_port="${MP_LOCAL_PORT}"
@@ -571,16 +571,16 @@ run_migration() {
     # Change to project root to ensure logger can write to /tmp
     cd "$PROJECT_ROOT" || exit 1
     "$migration_bin" \
-        -tenant-id ${TEST_TENANT_ID} \
-        -table-name ${TEST_TABLE_NAME} \
+        -tenant-id ${TENANT_ID} \
+        -table-name ${TABLE_NAME} \
         -mariadb-host ${mariadb_host} \
         -mariadb-user ${mariadb_user} \
         -mariadb-password "${mariadb_password}" \
         -mariadb-database ${mariadb_database} \
         -s3-bucket ${s3_bucket} \
         -aws-region ${aws_region} \
-        -segments ${TEST_SEGMENTS} \
-        -max-parallel-segments ${TEST_MAX_PARALLEL}
+        -segments ${SEGMENTS} \
+        -max-parallel-segments ${MAX_PARALLEL}
     local migration_result=$?
     cd - > /dev/null || true
     
@@ -601,7 +601,7 @@ verify_s3_uploads() {
     # Use real AWS S3 with timeout
     print_info "Checking real AWS S3 bucket: ${s3_bucket} (region: ${aws_region})"
     # List objects with prefix for this tenant
-    local s3_prefix="fis-migration/tenant-${TEST_TENANT_ID}"
+    local s3_prefix="fis-migration/tenant-${TENANT_ID}"
     local s3_objects=$(timeout 10 aws s3 ls s3://${s3_bucket}/${s3_prefix}/ --recursive --region ${aws_region} 2>&1 | wc -l | tr -d ' ')
     local s3_result=$?
     
@@ -626,7 +626,7 @@ verify_sql_generation() {
     
     local s3_bucket=${S3_BUCKET}
     local aws_region=${AWS_REGION}
-    local sql_s3_key="fis-migration/sql/load-data-tenant-${TEST_TENANT_ID}.sql"
+    local sql_s3_key="fis-migration/sql/load-data-tenant-${TENANT_ID}.sql"
     
     # Check if SQL file exists in S3
     print_info "Checking SQL file in S3: s3://${s3_bucket}/${sql_s3_key}"
@@ -736,21 +736,21 @@ verify_aurora_load() {
     local migration_error=$(mktemp)
     
     "$migration_bin" \
-        -tenant-id ${TEST_TENANT_ID} \
-        -table-name ${TEST_TABLE_NAME} \
+        -tenant-id ${TENANT_ID} \
+        -table-name ${TABLE_NAME} \
         -mariadb-host ${mariadb_host} \
         -mariadb-user ${mariadb_user} \
         -mariadb-password "${mariadb_password}" \
         -s3-bucket ${s3_bucket} \
-        -aws-region ${TEST_AWS_REGION} \
+        -aws-region ${AWS_REGION} \
         -aurora-host ${aws_mysql_host} \
         -aurora-user ${AWS_MYSQL_USER} \
         -aurora-secret ${AWS_MYSQL_SECRET} \
         -aurora-region ${AWS_MYSQL_REGION} \
         -aurora-database ${AWS_DATABASE_NAME} \
         -execute-sql \
-        -segments ${TEST_SEGMENTS} \
-        -max-parallel-segments ${TEST_MAX_PARALLEL} \
+        -segments ${SEGMENTS} \
+        -max-parallel-segments ${MAX_PARALLEL} \
         > "$migration_output" 2> "$migration_error"
     
     local migration_exit_code=$?
@@ -896,7 +896,7 @@ verify_aurora_load() {
         
         # Verify data exists in Aurora MySQL
         print_info "Verifying data in Aurora MySQL..."
-        verify_aurora_data ${TEST_TENANT_ID} || return 1
+        verify_aurora_data ${TENANT_ID} || return 1
         
         return 0
     else
@@ -1060,7 +1060,7 @@ main() {
     setup_tunnels || exit 1
     
     # Determine tenant ID - always use existing data
-    if [ -z "$TEST_TENANT_ID" ] || [ "$TEST_TENANT_ID" = "999999" ]; then
+    if [ -z "$TENANT_ID" ] || [ "$TENANT_ID" = "999999" ]; then
         # Auto-detect tenant (stderr goes to terminal, stdout captured)
         print_info "Auto-detecting tenant with existing data..."
         local detected_tenant
@@ -1075,15 +1075,15 @@ main() {
             print_error "Invalid tenant ID detected: '${detected_tenant}'"
             exit 1
         fi
-        TEST_TENANT_ID="$detected_tenant"
-        print_info "Using auto-detected tenant ID: ${TEST_TENANT_ID}"
+        TENANT_ID="$detected_tenant"
+        print_info "Using auto-detected tenant ID: ${TENANT_ID}"
     else
         # User specified a tenant ID - verify it has data
-        print_info "Using specified tenant ID: ${TEST_TENANT_ID}"
+        print_info "Using specified tenant ID: ${TENANT_ID}"
     fi
     
     # Verify tenant has data
-    verify_tenant_has_data ${TEST_TENANT_ID} || exit 1
+    verify_tenant_has_data ${TENANT_ID} || exit 1
     
     # Run migration
     run_migration || exit 1
@@ -1097,7 +1097,7 @@ main() {
         print_info ""
         print_info "=== Next Steps for Manager ==="
         print_info "1. Download SQL file from S3:"
-        print_info "   aws s3 cp s3://${S3_BUCKET}/fis-migration/sql/load-data-tenant-${TEST_TENANT_ID}.sql ./load-data-tenant-${TEST_TENANT_ID}.sql"
+        print_info "   aws s3 cp s3://${S3_BUCKET}/fis-migration/sql/load-data-tenant-${TENANT_ID}.sql ./load-data-tenant-${TENANT_ID}.sql"
         print_info ""
         print_info "2. Connect to Aurora MySQL on EC2 and execute SQL file"
         print_info ""
