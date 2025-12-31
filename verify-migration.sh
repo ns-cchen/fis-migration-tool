@@ -73,7 +73,6 @@ AWS_MYSQL_HOST="${FIS_AWS_MYSQL_HOST:-}"
 AWS_MYSQL_USER="${FIS_AWS_MYSQL_USER:-}"
 AWS_MYSQL_SECRET="${FIS_AWS_MYSQL_SECRET:-}"
 AWS_MYSQL_REGION="${FIS_AWS_MYSQL_REGION:-}"
-KEEP_CONTAINERS=false
 SKIP_TUNNEL_SETUP=false
 CLEANUP_ONLY=false
 AWS_DATABASE_NAME="fis_qa01"  # Default AWS database name from config
@@ -112,10 +111,6 @@ print_error() {
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --keep-containers)
-                KEEP_CONTAINERS=true
-                shift
-                ;;
             --use-tunnels)
                 # Check if next argument is an environment (qa01 or fr4)
                 if [[ $# -gt 1 ]] && [[ "$2" =~ ^(qa01|fr4)$ ]]; then
@@ -993,20 +988,16 @@ verify_aurora_data() {
 
 cleanup() {
     # Clean up tunnels
-    if [ "$KEEP_CONTAINERS" = false ]; then
-        print_info "Cleaning up SSH tunnels..."
-        if [[ -n "$MP_TUNNEL_PID" ]] && kill -0 "$MP_TUNNEL_PID" 2>/dev/null; then
-            kill "$MP_TUNNEL_PID" 2>/dev/null || true
-            wait "$MP_TUNNEL_PID" 2>/dev/null || true
-        fi
-        if [[ -n "$AWS_TUNNEL_PID" ]] && kill -0 "$AWS_TUNNEL_PID" 2>/dev/null; then
-            kill "$AWS_TUNNEL_PID" 2>/dev/null || true
-            wait "$AWS_TUNNEL_PID" 2>/dev/null || true
-        fi
-        print_info "Tunnels cleaned up"
-    elif [ "$KEEP_CONTAINERS" = true ]; then
-        print_info "Tunnels kept running (--keep-containers flag set)"
+    print_info "Cleaning up SSH tunnels..."
+    if [[ -n "$MP_TUNNEL_PID" ]] && kill -0 "$MP_TUNNEL_PID" 2>/dev/null; then
+        kill "$MP_TUNNEL_PID" 2>/dev/null || true
+        wait "$MP_TUNNEL_PID" 2>/dev/null || true
     fi
+    if [[ -n "$AWS_TUNNEL_PID" ]] && kill -0 "$AWS_TUNNEL_PID" 2>/dev/null; then
+        kill "$AWS_TUNNEL_PID" 2>/dev/null || true
+        wait "$AWS_TUNNEL_PID" 2>/dev/null || true
+    fi
+    print_info "Tunnels cleaned up"
 }
 
 # Main execution
@@ -1151,10 +1142,10 @@ main() {
     fi
     
     # Cleanup test data from qa01 MariaDB (skip if using existing data)
-    if [ "$KEEP_CONTAINERS" = false ] && [ "$USE_EXISTING_DATA" != true ]; then
+    if [ "$USE_EXISTING_DATA" != true ]; then
         print_info "Cleaning up test data from qa01 MariaDB..."
         cleanup_test_data || print_warn "Cleanup failed, but migration completed successfully"
-    elif [ "$USE_EXISTING_DATA" = true ]; then
+    else
         print_info "Skipping cleanup (using existing data)"
     fi
     
