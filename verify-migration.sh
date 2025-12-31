@@ -1,9 +1,7 @@
 #!/bin/bash
 # Verification script for migration tool
 # Works in local MAC environment
-# Supports two modes:
-#   1. Docker mode (default): Uses Docker containers for MariaDB and LocalStack (S3)
-#   2. Tunnel mode (--use-tunnels): Uses SSH tunnels to qa01 MariaDB and AWS MySQL
+# Uses SSH tunnels (--use-tunnels) to connect to qa01 MariaDB and AWS MySQL
 # Uses real AWS Aurora MySQL for LOAD DATA FROM S3 verification
 
 set -e
@@ -21,14 +19,10 @@ PROJECT_ROOT="$SCRIPT_DIR"
 
 # Configuration
 SCHEMA_FILE="$PROJECT_ROOT/internal/store/schema_mysql.sql"
-MARIADB_PORT=5590
-LOCALSTACK_PORT=4566
 
 # Test configuration
 TEST_TENANT_ID=999999
 TEST_TABLE_NAME="fis_aggr"
-TEST_S3_BUCKET="test-migration-bucket"  # Default for LocalStack
-REAL_S3_BUCKET="fis-mariadb-backups-use1-dev"  # Real S3 bucket for qa01
 TEST_AWS_REGION="us-east-1"
 TEST_SEGMENTS=16
 TEST_MAX_PARALLEL=8
@@ -80,7 +74,6 @@ AWS_MYSQL_USER="${FIS_AWS_MYSQL_USER:-}"
 AWS_MYSQL_SECRET="${FIS_AWS_MYSQL_SECRET:-}"
 AWS_MYSQL_REGION="${FIS_AWS_MYSQL_REGION:-}"
 KEEP_CONTAINERS=false
-USE_TUNNELS=false
 SKIP_TUNNEL_SETUP=false
 CLEANUP_ONLY=false
 AWS_DATABASE_NAME="fis_qa01"  # Default AWS database name from config
@@ -93,47 +86,13 @@ MP_TUNNEL_PID=""
 AWS_TUNNEL_PID=""
 
 # Helper Functions
-find_sql_file() {
-    local tenant_id=$1
-    local sql_file=""
-    local possible_locations=(
-        "/tmp/load-data-tenant-${tenant_id}.sql"
-        "${TMPDIR:-/tmp}/load-data-tenant-${tenant_id}.sql"
-    )
-    
-    # Also search in common temp directories (macOS uses /var/folders)
-    if [ -d "/var/folders" ]; then
-        local found_file=$(find /var/folders -name "load-data-tenant-${tenant_id}.sql" 2>/dev/null | head -1)
-        if [ -n "$found_file" ]; then
-            possible_locations+=("$found_file")
-        fi
-    fi
-    
-    for loc in "${possible_locations[@]}"; do
-        if [[ -n "$loc" ]] && [ -f "$loc" ]; then
-            sql_file="$loc"
-            break
-        fi
-    done
-    
-    echo "$sql_file"
-}
-
 get_mariadb_connection() {
-    if [ "$USE_TUNNELS" = true ]; then
-        # Use tunnel (works for both NPE and PE)
-        echo "localhost:${MP_LOCAL_PORT}|fis|${MP_PASSWORD}|fis"
-    else
-        echo "localhost:${MARIADB_PORT}|root||fis"
-    fi
+    # Use tunnel (works for both NPE and PE)
+    echo "localhost:${MP_LOCAL_PORT}|fis|${MP_PASSWORD}|fis"
 }
 
 get_aws_mysql_connection() {
-    if [ "$USE_TUNNELS" = true ]; then
-        echo "localhost:${AWS_LOCAL_PORT}|${AWS_MYSQL_USER}|${AWS_PASSWORD}|${AWS_DATABASE_NAME}"
-    else
-        echo "${AWS_MYSQL_HOST}|${AWS_MYSQL_USER}||${AWS_DATABASE_NAME}"
-    fi
+    echo "localhost:${AWS_LOCAL_PORT}|${AWS_MYSQL_USER}|${AWS_PASSWORD}|${AWS_DATABASE_NAME}"
 }
 
 # Functions
@@ -158,7 +117,6 @@ parse_args() {
                 shift
                 ;;
             --use-tunnels)
-                USE_TUNNELS=true
                 # Check if next argument is an environment (qa01 or fr4)
                 if [[ $# -gt 1 ]] && [[ "$2" =~ ^(qa01|fr4)$ ]]; then
                     TUNNEL_ENV="$2"
@@ -291,20 +249,6 @@ parse_args() {
                 ;;
         esac
     done
-}
-
-check_docker_available() {
-    if ! command -v docker &> /dev/null; then
-        print_error "Docker is not installed. Please install Docker Desktop."
-        return 1
-    fi
-    
-    if ! docker info &> /dev/null; then
-        print_error "Docker is not running. Please start Docker Desktop."
-        return 1
-    fi
-    
-    return 0
 }
 
 check_tsh() {
@@ -485,26 +429,8 @@ check_migration_binary() {
     print_info "Migration binary found: $migration_bin"
 }
 
-start_containers() {
-    # We use qa01 MariaDB via tunnel for test data generation
-    # No need for local Docker MariaDB
-    print_info "Skipping local Docker MariaDB - using qa01 MariaDB via tunnel for test data generation"
-    print_info "Skipping LocalStack - using real AWS S3 bucket: ${REAL_S3_BUCKET}"
-    
-    # Verify AWS credentials are available
-    if ! aws sts get-caller-identity &>/dev/null; then
-        print_error "AWS credentials not configured. Please run 'aws configure' or set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY"
-        return 1
-    fi
-    print_info "AWS credentials verified for real S3 access"
-    return 0
-}
 
 setup_tunnels() {
-    if [ "$USE_TUNNELS" != true ]; then
-        return 0
-    fi
-    
     print_info "Setting up SSH tunnels..."
     
     # Check TSH
@@ -614,31 +540,6 @@ cleanup_test_data() {
     fi
 }
 
-initialize_schema() {
-    print_info "Initializing database schema..."
-    
-    if [ "$USE_TUNNELS" = true ]; then
-        # Use tunnel connection
-        MYSQL_PWD="${MP_PASSWORD}" mysql -h 127.0.0.1 -P ${MP_LOCAL_PORT} -u fis fis < "$SCHEMA_FILE"
-        
-        # Add last_modified and version columns if not present
-        MYSQL_PWD="${MP_PASSWORD}" mysql -h 127.0.0.1 -P ${MP_LOCAL_PORT} -u fis fis -e "
-            ALTER TABLE fis_aggr ADD COLUMN IF NOT EXISTS last_modified TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
-            ALTER TABLE fis_aggr ADD COLUMN IF NOT EXISTS version INT NULL;
-        " 2>/dev/null || true
-    else
-        # Use Docker container
-        docker exec -i fis-mariadb-migration-test mysql -h localhost -u root fis < "$SCHEMA_FILE"
-        
-        # Add last_modified and version columns if not present
-        docker exec fis-mariadb-migration-test mysql -h localhost -u root fis -e "
-            ALTER TABLE fis_aggr ADD COLUMN IF NOT EXISTS last_modified TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
-            ALTER TABLE fis_aggr ADD COLUMN IF NOT EXISTS version INT NULL;
-        " 2>/dev/null || true
-    fi
-    
-    print_info "Schema initialized"
-}
 
 run_migration() {
     print_info "Running migration tool..."
@@ -648,8 +549,8 @@ run_migration() {
     # Ensure /tmp exists for logger
     mkdir -p /tmp
     
-    # Set AWS region (use real S3, not LocalStack)
-    export AWS_DEFAULT_REGION=${TEST_AWS_REGION}
+    # Set AWS region
+    export AWS_DEFAULT_REGION=${AWS_REGION}
     unset AWS_ENDPOINT_URL
     
     # Verify AWS credentials
@@ -670,11 +571,7 @@ run_migration() {
     local s3_bucket=${S3_BUCKET}
     local aws_region=${AWS_REGION}
     
-    if [ "$USE_TUNNELS" = true ]; then
-        print_info "Using AWS S3 bucket: ${s3_bucket} (region: ${aws_region})"
-    else
-        print_info "Using LocalStack S3 bucket: ${s3_bucket}"
-    fi
+    print_info "Using AWS S3 bucket: ${s3_bucket} (region: ${aws_region})"
     
     # Set AWS region
     export AWS_DEFAULT_REGION=${aws_region}
@@ -723,40 +620,26 @@ verify_s3_uploads() {
     local s3_bucket=${S3_BUCKET}
     local aws_region=${AWS_REGION}
     
-    if [ "$USE_TUNNELS" = true ]; then
-        # Use real AWS S3 with timeout
-        print_info "Checking real AWS S3 bucket: ${s3_bucket} (region: ${aws_region})"
-        # List objects with prefix for this tenant
-        local s3_prefix="fis-migration/tenant-${TEST_TENANT_ID}"
-        local s3_objects=$(timeout 10 aws s3 ls s3://${s3_bucket}/${s3_prefix}/ --recursive --region ${aws_region} 2>&1 | wc -l | tr -d ' ')
-        local s3_result=$?
-        
-        if [ $s3_result -ne 0 ]; then
-            print_warn "Failed to list S3 bucket (may not exist or no access): ${s3_bucket}"
-            print_warn "This is expected if no CSV files were generated (0 rows exported)"
-            return 0  # Don't fail - expected if no data
-        fi
-        
-        if [ "$s3_objects" -eq 0 ]; then
-            print_warn "No objects found in S3 bucket prefix ${s3_prefix}"
-            print_warn "This is expected if migration found 0 rows to export"
-            return 0  # Don't fail - expected if no data
-        fi
-        
-        print_info "Verified $s3_objects objects in real S3 bucket: ${s3_bucket}/${s3_prefix}"
-    else
-        # Use LocalStack S3
-        local s3_objects=$(timeout 5 docker exec fis-localstack-migration-test \
-            aws --endpoint-url=http://localhost:4566 s3 ls s3://${TEST_S3_BUCKET} --recursive 2>/dev/null | wc -l | tr -d ' ')
-        
-        if [ "$s3_objects" -eq 0 ]; then
-            print_warn "No objects found in LocalStack S3 bucket (expected if 0 rows exported)"
-            return 0  # Don't fail
-        fi
-        
-        print_info "Verified $s3_objects objects in LocalStack S3 bucket"
+    # Use real AWS S3 with timeout
+    print_info "Checking real AWS S3 bucket: ${s3_bucket} (region: ${aws_region})"
+    # List objects with prefix for this tenant
+    local s3_prefix="fis-migration/tenant-${TEST_TENANT_ID}"
+    local s3_objects=$(timeout 10 aws s3 ls s3://${s3_bucket}/${s3_prefix}/ --recursive --region ${aws_region} 2>&1 | wc -l | tr -d ' ')
+    local s3_result=$?
+    
+    if [ $s3_result -ne 0 ]; then
+        print_warn "Failed to list S3 bucket (may not exist or no access): ${s3_bucket}"
+        print_warn "This is expected if no CSV files were generated (0 rows exported)"
+        return 0  # Don't fail - expected if no data
     fi
     
+    if [ "$s3_objects" -eq 0 ]; then
+        print_warn "No objects found in S3 bucket prefix ${s3_prefix}"
+        print_warn "This is expected if migration found 0 rows to export"
+        return 0  # Don't fail - expected if no data
+    fi
+    
+    print_info "Verified $s3_objects objects in real S3 bucket: ${s3_bucket}/${s3_prefix}"
     return 0
 }
 
@@ -768,89 +651,50 @@ verify_sql_generation() {
     local sql_s3_key="fis-migration/sql/load-data-tenant-${TEST_TENANT_ID}.sql"
     
     # Check if SQL file exists in S3
-    if [ "$USE_TUNNELS" = true ]; then
-        # Use real AWS S3
-        print_info "Checking SQL file in S3: s3://${s3_bucket}/${sql_s3_key}"
-        if ! timeout 10 aws s3 ls "s3://${s3_bucket}/${sql_s3_key}" --region "${aws_region}" &>/dev/null; then
-            print_warn "SQL file not found in S3: s3://${s3_bucket}/${sql_s3_key}"
-            print_warn "This is expected if migration found 0 rows to export"
-            return 0  # Don't fail - expected if no data
-        fi
-        
-        # Download SQL file temporarily to verify contents
-        local tmp_sql_file=$(mktemp)
-        if ! timeout 10 aws s3 cp "s3://${s3_bucket}/${sql_s3_key}" "$tmp_sql_file" --region "${aws_region}" &>/dev/null; then
-            print_warn "Failed to download SQL file from S3 for verification"
-            rm -f "$tmp_sql_file"
-            return 0  # Don't fail - file exists in S3, just couldn't verify contents
-        fi
-        
-        # Verify SQL file contains LOAD DATA FROM S3 statements
-        if ! grep -q "LOAD DATA FROM S3" "$tmp_sql_file"; then
-            # If file is empty, this is expected for 0 rows
-            if [ ! -s "$tmp_sql_file" ]; then
-                print_warn "SQL file is empty (expected if migration found 0 rows to export)"
-                rm -f "$tmp_sql_file"
-                return 0  # Don't fail - expected if no data
-            fi
-            print_error "SQL file does not contain LOAD DATA FROM S3 statements"
-            rm -f "$tmp_sql_file"
-            return 1
-        fi
-        
-        # Verify S3 paths in SQL (check for bucket)
-        if ! grep -q "s3://${s3_bucket}" "$tmp_sql_file"; then
-            # If file is empty or has no LOAD DATA statements, this is expected for 0 rows
-            if [ ! -s "$tmp_sql_file" ] || ! grep -q "LOAD DATA" "$tmp_sql_file"; then
-                print_warn "SQL file is empty or has no LOAD DATA statements (expected if 0 rows exported)"
-                rm -f "$tmp_sql_file"
-                return 0  # Don't fail - expected if no data
-            fi
-            print_error "SQL file does not contain expected S3 bucket paths"
-            rm -f "$tmp_sql_file"
-            return 1
-        fi
-        
-        print_info "SQL file verified in S3: s3://${s3_bucket}/${sql_s3_key}"
-        rm -f "$tmp_sql_file"
-        return 0
-    else
-        # Docker mode - check local file (for LocalStack testing)
-        local sql_file=$(find_sql_file ${TEST_TENANT_ID})
-        
-        if [ -z "$sql_file" ] || [ ! -f "$sql_file" ]; then
-            print_warn "SQL file not found in expected locations"
-            print_warn "This is expected if migration found 0 rows to export"
-            return 0  # Don't fail - expected if no data
-        fi
-        
-        print_info "Found SQL file: $sql_file"
-        
-        # Verify SQL file contains LOAD DATA FROM S3 statements
-        if ! grep -q "LOAD DATA FROM S3" "$sql_file"; then
-            # If file is empty, this is expected for 0 rows
-            if [ ! -s "$sql_file" ]; then
-                print_warn "SQL file is empty (expected if migration found 0 rows to export)"
-                return 0  # Don't fail - expected if no data
-            fi
-            print_error "SQL file does not contain LOAD DATA FROM S3 statements"
-            return 1
-        fi
-        
-        # Verify S3 paths in SQL (check for either bucket)
-        if ! grep -q "s3://${TEST_S3_BUCKET}" "$sql_file" && ! grep -q "s3://${REAL_S3_BUCKET}" "$sql_file"; then
-            # If file is empty or has no LOAD DATA statements, this is expected for 0 rows
-            if [ ! -s "$sql_file" ] || ! grep -q "LOAD DATA" "$sql_file"; then
-                print_warn "SQL file is empty or has no LOAD DATA statements (expected if 0 rows exported)"
-                return 0  # Don't fail - expected if no data
-            fi
-            print_error "SQL file does not contain expected S3 bucket paths"
-            return 1
-        fi
-        
-        print_info "SQL file verified: $sql_file"
-        return 0
+    print_info "Checking SQL file in S3: s3://${s3_bucket}/${sql_s3_key}"
+    if ! timeout 10 aws s3 ls "s3://${s3_bucket}/${sql_s3_key}" --region "${aws_region}" &>/dev/null; then
+        print_warn "SQL file not found in S3: s3://${s3_bucket}/${sql_s3_key}"
+        print_warn "This is expected if migration found 0 rows to export"
+        return 0  # Don't fail - expected if no data
     fi
+    
+    # Download SQL file temporarily to verify contents
+    local tmp_sql_file=$(mktemp)
+    if ! timeout 10 aws s3 cp "s3://${s3_bucket}/${sql_s3_key}" "$tmp_sql_file" --region "${aws_region}" &>/dev/null; then
+        print_warn "Failed to download SQL file from S3 for verification"
+        rm -f "$tmp_sql_file"
+        return 0  # Don't fail - file exists in S3, just couldn't verify contents
+    fi
+    
+    # Verify SQL file contains LOAD DATA FROM S3 statements
+    if ! grep -q "LOAD DATA FROM S3" "$tmp_sql_file"; then
+        # If file is empty, this is expected for 0 rows
+        if [ ! -s "$tmp_sql_file" ]; then
+            print_warn "SQL file is empty (expected if migration found 0 rows to export)"
+            rm -f "$tmp_sql_file"
+            return 0  # Don't fail - expected if no data
+        fi
+        print_error "SQL file does not contain LOAD DATA FROM S3 statements"
+        rm -f "$tmp_sql_file"
+        return 1
+    fi
+    
+    # Verify S3 paths in SQL (check for bucket)
+    if ! grep -q "s3://${s3_bucket}" "$tmp_sql_file"; then
+        # If file is empty or has no LOAD DATA statements, this is expected for 0 rows
+        if [ ! -s "$tmp_sql_file" ] || ! grep -q "LOAD DATA" "$tmp_sql_file"; then
+            print_warn "SQL file is empty or has no LOAD DATA statements (expected if 0 rows exported)"
+            rm -f "$tmp_sql_file"
+            return 0  # Don't fail - expected if no data
+        fi
+        print_error "SQL file does not contain expected S3 bucket paths"
+        rm -f "$tmp_sql_file"
+        return 1
+    fi
+    
+    print_info "SQL file verified in S3: s3://${s3_bucket}/${sql_s3_key}"
+    rm -f "$tmp_sql_file"
+    return 0
 }
 
 verify_aurora_load() {
@@ -888,8 +732,8 @@ verify_aurora_load() {
     export FIS_AWS_MYSQL_USER="$AWS_MYSQL_USER"
     export FIS_AWS_MYSQL_SECRET="$AWS_MYSQL_SECRET"
     export FIS_AWS_MYSQL_REGION="$AWS_MYSQL_REGION"
-    # For tunnel mode, use provided AWS password if available; otherwise let Secrets Manager resolve it
-    if [ "$USE_TUNNELS" = true ] && [ -n "$AWS_PASSWORD" ]; then
+    # Use provided AWS password if available; otherwise let Secrets Manager resolve it
+    if [ -n "$AWS_PASSWORD" ]; then
         export FIS_AWS_SQL_PASSWORD="${AWS_PASSWORD}"
     else
         unset FIS_AWS_SQL_PASSWORD  # Let Secrets Manager resolve it
@@ -903,13 +747,8 @@ verify_aurora_load() {
     local mariadb_user=$(echo "$mariadb_conn" | cut -d'|' -f2)
     local mariadb_password=$(echo "$mariadb_conn" | cut -d'|' -f3)
     
-    # Determine S3 bucket based on mode
-    local s3_bucket
-    if [ "$USE_TUNNELS" = true ]; then
-        s3_bucket=${S3_BUCKET}
-    else
-        s3_bucket=${TEST_S3_BUCKET}
-    fi
+    # Determine S3 bucket
+    local s3_bucket=${S3_BUCKET}
     
     # SQL file is in S3, not local - migration tool will generate and upload it
     print_info "Running migration with -execute-sql to load data into Aurora MySQL..."
@@ -1129,12 +968,12 @@ verify_aurora_data() {
     
     print_info "Checking for data in Aurora MySQL for tenant ${tenant_id}..."
     
-    # Use AWS password if provided (for tunnel mode)
+    # Use AWS password if provided
     # In production, migration tool resolves from Secrets Manager
-    if [ "$USE_TUNNELS" = true ] && [ -n "$AWS_PASSWORD" ]; then
+    if [ -n "$AWS_PASSWORD" ]; then
         export MYSQL_PWD="${AWS_PASSWORD}"
     else
-        # For non-tunnel mode, password should be resolved by migration tool
+        # Password should be resolved by migration tool
         # We'll try without password first (may fail, but migration tool handles it)
         export MYSQL_PWD=""
     fi
@@ -1163,8 +1002,8 @@ verify_aurora_data() {
 }
 
 cleanup() {
-    # Clean up tunnels if using tunnel mode
-    if [ "$USE_TUNNELS" = true ] && [ "$KEEP_CONTAINERS" = false ]; then
+    # Clean up tunnels
+    if [ "$KEEP_CONTAINERS" = false ]; then
         print_info "Cleaning up SSH tunnels..."
         if [[ -n "$MP_TUNNEL_PID" ]] && kill -0 "$MP_TUNNEL_PID" 2>/dev/null; then
             kill "$MP_TUNNEL_PID" 2>/dev/null || true
@@ -1175,20 +1014,8 @@ cleanup() {
             wait "$AWS_TUNNEL_PID" 2>/dev/null || true
         fi
         print_info "Tunnels cleaned up"
-    fi
-    
-    # Clean up Docker containers if using Docker mode
-    if [ "$USE_TUNNELS" != true ] && [ "$KEEP_CONTAINERS" = false ]; then
-        print_info "Cleaning up containers..."
-        docker stop fis-mariadb-migration-test fis-localstack-migration-test 2>/dev/null || true
-        docker rm fis-mariadb-migration-test fis-localstack-migration-test 2>/dev/null || true
-        print_info "Containers cleaned up"
     elif [ "$KEEP_CONTAINERS" = true ]; then
-        if [ "$USE_TUNNELS" = true ]; then
-            print_info "Tunnels kept running (--keep-containers flag set)"
-        else
-            print_info "Containers kept running (--keep-containers flag set)"
-        fi
+        print_info "Tunnels kept running (--keep-containers flag set)"
     fi
 }
 
@@ -1204,20 +1031,16 @@ main() {
     
     # Set default S3 bucket and region if not provided via CLI
     if [ -z "$S3_BUCKET" ]; then
-        if [ "$USE_TUNNELS" = true ]; then
-            # Use environment-specific defaults (already set in parse_args if --use-tunnels <env> was used)
-            if [ "$TUNNEL_ENV" = "fr4" ]; then
-                S3_BUCKET="${FR4_S3_BUCKET}"
-            else
-                S3_BUCKET="${QA01_S3_BUCKET}"  # Default: qa01 (NPE) bucket
-            fi
+        # Use environment-specific defaults (already set in parse_args if --use-tunnels <env> was used)
+        if [ "$TUNNEL_ENV" = "fr4" ]; then
+            S3_BUCKET="${FR4_S3_BUCKET}"
         else
-            S3_BUCKET="${TEST_S3_BUCKET}"  # Default: LocalStack bucket
+            S3_BUCKET="${QA01_S3_BUCKET}"  # Default: qa01 (NPE) bucket
         fi
     fi
     
     if [ -z "$AWS_REGION" ]; then
-        if [ "$USE_TUNNELS" = true ] && [ "$TUNNEL_ENV" = "fr4" ]; then
+        if [ "$TUNNEL_ENV" = "fr4" ]; then
             AWS_REGION="${FR4_AWS_REGION}"
         else
             AWS_REGION="${QA01_AWS_REGION}"  # Default: qa01 (NPE) region
@@ -1228,11 +1051,6 @@ main() {
     
     # Handle cleanup-only mode
     if [ "$CLEANUP_ONLY" = true ]; then
-        if [ "$USE_TUNNELS" != true ]; then
-            print_error "cleanup-only requires --use-tunnels mode"
-            exit 1
-        fi
-        
         print_info "Running cleanup only..."
         check_tsh || exit 1
         
@@ -1252,16 +1070,11 @@ main() {
         return 0
     fi
     
-    if [ "$USE_TUNNELS" = true ]; then
-        print_info "Mode: SSH Tunnels (MariaDB + optional AWS MySQL)"
-        print_info "  - MariaDB: via SSH tunnel (localhost:${MP_LOCAL_PORT})"
-        print_info "  - S3 bucket: ${S3_BUCKET} (region: ${AWS_REGION})"
-        if [ -z "$AWS_MYSQL_USER" ] || [ -z "$AWS_MYSQL_SECRET" ]; then
-            print_info "  - SQL execution: Skipped (manager will execute on EC2)"
-        fi
-    else
-        print_info "Mode: Docker Containers (local MariaDB + LocalStack S3)"
-        check_docker_available || exit 1
+    print_info "Mode: SSH Tunnels (MariaDB + optional AWS MySQL)"
+    print_info "  - MariaDB: via SSH tunnel (localhost:${MP_LOCAL_PORT})"
+    print_info "  - S3 bucket: ${S3_BUCKET} (region: ${AWS_REGION})"
+    if [ -z "$AWS_MYSQL_USER" ] || [ -z "$AWS_MYSQL_SECRET" ]; then
+        print_info "  - SQL execution: Skipped (manager will execute on EC2)"
     fi
     
     check_migration_binary || exit 1
@@ -1269,12 +1082,11 @@ main() {
     # Trap to ensure cleanup on exit
     trap cleanup EXIT
     
-    # Setup tunnels if using tunnel mode
-    if [ "$USE_TUNNELS" = true ]; then
-        setup_tunnels || exit 1
-        
-        # Determine data generation method
-        if [ "$USE_EXISTING_DATA" = true ]; then
+    # Setup tunnels
+    setup_tunnels || exit 1
+    
+    # Determine data generation method
+    if [ "$USE_EXISTING_DATA" = true ]; then
             # Use existing tenant data
             print_info "Using existing tenant data"
             if [ -z "$TEST_TENANT_ID" ] || [ "$TEST_TENANT_ID" = "999999" ]; then
@@ -1315,17 +1127,6 @@ main() {
                 exit 1
             fi
         fi
-    fi
-    
-    # Start containers only in Docker mode (skip when using tunnels - connecting to NPE)
-    if [ "$USE_TUNNELS" != true ]; then
-        start_containers || exit 1
-    fi
-    
-    # Initialize schema only in Docker mode (qa01 already has schema)
-    if [ "$USE_TUNNELS" != true ] && [ "$USE_EXISTING_DATA" != true ]; then
-        initialize_schema || exit 1
-    fi
     
     # Skip test data generation - we only support --use-existing-data now
     # (benchmark/direct INSERT and Kafka features were removed)
