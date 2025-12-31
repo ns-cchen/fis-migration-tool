@@ -64,7 +64,6 @@ MP_PASSWORD=""  # MariaDB password (required via --mp-password flag)
 AWS_PASSWORD=""  # AWS Aurora MySQL password (optional, only needed for SQL execution verification)
 
 # S3 configuration (can be overridden via CLI flags)
-# Defaults are set after REAL_S3_BUCKET and TEST_AWS_REGION are defined above
 S3_BUCKET=""
 AWS_REGION=""
 
