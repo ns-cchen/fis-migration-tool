@@ -17,8 +17,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # PROJECT_ROOT is where the script is located (project root)
 PROJECT_ROOT="$SCRIPT_DIR"
 
-# Configuration
-SCHEMA_FILE="$PROJECT_ROOT/internal/store/schema_mysql.sql"
 
 # Configuration
 TENANT_ID=999999  # Default: auto-detect tenant with data
